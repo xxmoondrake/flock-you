@@ -46,6 +46,7 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 | `FY_BATTERY_RECHECK_S` | 600 | Wake interval while off for low battery |
 | `FY_STATUS_LED_PATTERNS` | XIAO only | Show the operating mode on the LED |
 | `FY_GPS_LOG_RAW_NMEA` | off | Echo raw NMEA to the console (`heltec_v43_debug_nmea`) |
+| `FY_SERIAL_JSON` | on | Print upstream dashboard JSON for each reported match |
 
 ## Planned
 
@@ -67,13 +68,33 @@ python tools/read_obslog.py obslog.bin --battery-csv battery.csv --encounters-cs
 
 Encounter output contains positions; treat it as sensitive location history.
 
+## Upstream dashboard
+
+Each reported match is also printed as one JSON line in upstream's format, so the Flask dashboard in [`api/`](../api/) can read either board over USB serial. The dashboard ignores the non-JSON log lines. Lines carry no location; the dashboard adds the host's GPS. They also add this firmware's `rule` and `strength`. Identifier sources are in [`datasets/esp_idf_firmware_signatures.md`](../datasets/esp_idf_firmware_signatures.md).
+
+```json
+{"event":"detection","detection_method":"wifi_wildcard_probe_ie_sig","detection_tier":4,"protocol":"wifi_2_4ghz","mac_address":"b4:1e:52:01:02:03","oui":"b4:1e:52","device_name":"","rssi":-52,"channel":6,"frequency":2437,"ssid":"","rule":"wifi_probe_ie_sig","strength":"specific"}
+```
+
+| Rules | `detection_method` | Tier |
+| --- | --- | --- |
+| `wifi_probe_ie_sig` | `wifi_wildcard_probe_ie_sig` | 4 |
+| `wifi_wildcard_probe` | `wifi_wildcard_probe` | 3 |
+| `wifi_oui_addr2` | `wifi_oui_addr2` | 2 |
+| `wifi_oui_addr1`, `wifi_oui_addr3` | same as the rule | 1 |
+| BLE name rules | `ble_name` | 2 |
+| `ble_mfg_09c8` | `ble_mfg` | 2 |
+| BLE service rules | `ble_gatt_svc` (channel 255, frequency 0) | 2 |
+
+The firmware does not read dashboard commands. It has no buzzer for the beep controls, and it does not dump stored records over serial (`dump_session`), because export is planned for the authenticated dashboard; read records with esptool as above.
+
 ## Layout
 
 The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds their unit tests (set `FY_RENDER_DIR` to write sample screens as PBM images).
 
 | Path | Contents | Host-tested |
 | --- | --- | --- |
-| `components/fy_signatures` | Signature data and matching | All |
+| `components/fy_signatures` | Signature data and matching, upstream dashboard JSON | All |
 | `components/fy_detector` | Wi-Fi and BLE capture, queues, matcher, reporting | |
 | `components/fy_board` | Board profiles (`CONFIG_FY_BOARD_*`): pins, power, LED, SSD1306 transport, GNSS UART | |
 | `components/fy_gps` | NMEA parser, receive-only UART driver | Parser |
@@ -107,7 +128,7 @@ Before flashing:
 
 ## Signature review notes
 
-Carried over unchanged from upstream; open items for the planned review:
+Carried over unchanged from upstream; open items for the planned review (registry owners and sources are in the datasets note linked above):
 - The OUI list includes broad vendor prefixes: `00:03:7f` is Qualcomm Atheros, and at least `a4:cf:12` and `3c:71:bf` appear to be Espressif, so ESP32 boards (another detector, a test transmitter) can match. All OUI rules are labeled possible.
 - The BLE Raven rule matches any 16-bit service UUID in `0x3100`-`0x3500`; labeled specific pending review.
 - The BLE names "DfuTarg" and a bare 10-digit serial, the Nordic DFU service, and company ID `0x09C8` are shared by unrelated products; labeled possible.

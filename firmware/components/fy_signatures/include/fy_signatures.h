@@ -37,10 +37,11 @@ enum class Strength : uint8_t { Possible = 0, Specific = 1 };
 enum class Transport : uint8_t { Wifi = 0, Ble = 1 };
 
 struct RuleInfo {
-  const char *id;         // stable snake_case identifier
+  const char *id;               // stable snake_case identifier
   Transport transport;
   Strength strength;
-  uint8_t upstream_tier;  // flock-you confidence tier (0-4), kept for parity review
+  uint8_t upstream_tier;        // flock-you confidence tier (0-4)
+  const char *upstream_method;  // flock-you dashboard detection_method key
 };
 
 const RuleInfo &rule_info(Rule rule);

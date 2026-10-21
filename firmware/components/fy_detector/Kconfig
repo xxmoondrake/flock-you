@@ -1,0 +1,13 @@
+menu "Detector output"
+
+    config FY_SERIAL_JSON
+        bool "Print upstream flock-you dashboard JSON for each reported match"
+        default y
+        help
+            Each reported match is also printed on the console as one JSON
+            line in the upstream flock-you format, which its Flask dashboard
+            (api/flockyou.py) reads over USB serial. Lines carry no location;
+            the dashboard adds the host's GPS. Log lines that are not JSON
+            are ignored by the dashboard.
+
+endmenu

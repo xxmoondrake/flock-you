@@ -27,20 +27,22 @@ namespace {
 // Rule metadata
 // ---------------------------------------------------------------------------
 
+// Upstream methods and tiers are those its firmware emits for the same
+// signature (alertTypeToMethod and alertTypeToTier in upstream main.cpp).
 constexpr RuleInfo kRuleInfo[] = {
-    {"wifi_probe_ie_sig", Transport::Wifi, Strength::Specific, 4},
-    {"wifi_wildcard_probe", Transport::Wifi, Strength::Possible, 3},
-    {"wifi_oui_addr2", Transport::Wifi, Strength::Possible, 2},
-    {"wifi_oui_addr1", Transport::Wifi, Strength::Possible, 1},
-    {"wifi_oui_addr3", Transport::Wifi, Strength::Possible, 1},
-    {"ble_name_penguin", Transport::Ble, Strength::Specific, 2},
-    {"ble_name_fs_ext_battery", Transport::Ble, Strength::Specific, 2},
-    {"ble_name_bare_serial", Transport::Ble, Strength::Possible, 2},
-    {"ble_name_dfutarg", Transport::Ble, Strength::Possible, 2},
-    {"ble_mfg_09c8", Transport::Ble, Strength::Possible, 2},
-    {"ble_svc_flock", Transport::Ble, Strength::Specific, 2},
-    {"ble_svc_nordic_dfu", Transport::Ble, Strength::Possible, 2},
-    {"ble_svc_raven", Transport::Ble, Strength::Specific, 2},
+    {"wifi_probe_ie_sig", Transport::Wifi, Strength::Specific, 4, "wifi_wildcard_probe_ie_sig"},
+    {"wifi_wildcard_probe", Transport::Wifi, Strength::Possible, 3, "wifi_wildcard_probe"},
+    {"wifi_oui_addr2", Transport::Wifi, Strength::Possible, 2, "wifi_oui_addr2"},
+    {"wifi_oui_addr1", Transport::Wifi, Strength::Possible, 1, "wifi_oui_addr1"},
+    {"wifi_oui_addr3", Transport::Wifi, Strength::Possible, 1, "wifi_oui_addr3"},
+    {"ble_name_penguin", Transport::Ble, Strength::Specific, 2, "ble_name"},
+    {"ble_name_fs_ext_battery", Transport::Ble, Strength::Specific, 2, "ble_name"},
+    {"ble_name_bare_serial", Transport::Ble, Strength::Possible, 2, "ble_name"},
+    {"ble_name_dfutarg", Transport::Ble, Strength::Possible, 2, "ble_name"},
+    {"ble_mfg_09c8", Transport::Ble, Strength::Possible, 2, "ble_mfg"},
+    {"ble_svc_flock", Transport::Ble, Strength::Specific, 2, "ble_gatt_svc"},
+    {"ble_svc_nordic_dfu", Transport::Ble, Strength::Possible, 2, "ble_gatt_svc"},
+    {"ble_svc_raven", Transport::Ble, Strength::Specific, 2, "ble_gatt_svc"},
 };
 static_assert(sizeof(kRuleInfo) / sizeof(kRuleInfo[0]) == static_cast<size_t>(Rule::Count),
               "every rule needs metadata");

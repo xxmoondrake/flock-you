@@ -4,10 +4,12 @@
 
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <vector>
 
+#include "fy_dashboard_json.h"
 #include "fy_signatures.h"
 
 using fy::Match;
@@ -280,8 +282,95 @@ void test_every_rule_has_a_device_type() {
   TEST_ASSERT_TRUE(fy::device_type_info(fy::device_type(Rule::WifiOuiReceiver)).possible);
 }
 
+// ---- Upstream dashboard JSON ------------------------------------------------
+
+Match make_match(Rule rule, const uint8_t *mac, const char *name) {
+  Match m = {};
+  m.rule = rule;
+  memcpy(m.mac, mac, sizeof(m.mac));
+  snprintf(m.name, sizeof(m.name), "%s", name);
+  return m;
+}
+
+void test_dashboard_methods_follow_upstream() {
+  for (int r = 0; r < static_cast<int>(Rule::Count); r++) {
+    const fy::RuleInfo &info = fy::rule_info(static_cast<Rule>(r));
+    TEST_ASSERT_NOT_NULL(info.upstream_method);
+    const char *prefix = info.transport == fy::Transport::Ble ? "ble_" : "wifi_";
+    TEST_ASSERT_EQUAL_INT(0, strncmp(info.upstream_method, prefix, strlen(prefix)));
+    TEST_ASSERT_TRUE(info.upstream_tier <= 4);
+  }
+  TEST_ASSERT_EQUAL_STRING("wifi_wildcard_probe_ie_sig",
+                           fy::rule_info(Rule::WifiProbeIeSignature).upstream_method);
+  TEST_ASSERT_EQUAL_STRING("ble_gatt_svc", fy::rule_info(Rule::BleServiceRaven).upstream_method);
+}
+
+void test_dashboard_json_wifi_fingerprint() {
+  const Match m = make_match(Rule::WifiProbeIeSignature, kFlockMac, "");
+  char line[400];
+  const size_t n = fy::format_dashboard_detection(m, -52, 6, line, sizeof(line));
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"event\":\"detection\",\"detection_method\":\"wifi_wildcard_probe_ie_sig\","
+      "\"detection_tier\":4,\"protocol\":\"wifi_2_4ghz\",\"mac_address\":\"b4:1e:52:01:02:03\","
+      "\"oui\":\"b4:1e:52\",\"device_name\":\"\",\"rssi\":-52,\"channel\":6,\"frequency\":2437,"
+      "\"ssid\":\"\",\"rule\":\"wifi_probe_ie_sig\",\"strength\":\"specific\"}",
+      line);
+  TEST_ASSERT_EQUAL_UINT(strlen(line), n);
+}
+
+void test_dashboard_json_ble_name() {
+  const uint8_t mac[6] = {0xd4, 0x01, 0x02, 0x03, 0x04, 0x05};
+  const Match m = make_match(Rule::BleNamePenguinSerial, mac, "Penguin-1234567890");
+  char line[400];
+  fy::format_dashboard_detection(m, -71, 11, line, sizeof(line));
+  // BLE reports channel 255 and frequency 0, as upstream does.
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"event\":\"detection\",\"detection_method\":\"ble_name\",\"detection_tier\":2,"
+      "\"protocol\":\"ble\",\"mac_address\":\"d4:01:02:03:04:05\",\"oui\":\"d4:01:02\","
+      "\"device_name\":\"Penguin-1234567890\",\"rssi\":-71,\"channel\":255,\"frequency\":0,"
+      "\"ssid\":\"\",\"rule\":\"ble_name_penguin\",\"strength\":\"specific\"}",
+      line);
+}
+
+void test_dashboard_json_sanitizes_name() {
+  const Match m = make_match(Rule::BleNameDfuTarg, kOtherMac, "a\"b\\c\x01\xc3");
+  char line[400];
+  fy::format_dashboard_detection(m, -80, 0, line, sizeof(line));
+  TEST_ASSERT_NOT_NULL(strstr(line, "\"device_name\":\"a?b?c??\","));
+  TEST_ASSERT_NOT_NULL(strstr(line, "\"strength\":\"possible\"}"));
+}
+
+void test_dashboard_json_frequencies() {
+  const Match m = make_match(Rule::WifiOuiTransmitter, kQualcommMac, "");
+  char line[400];
+  const struct {
+    uint8_t channel;
+    const char *expect;
+  } cases[] = {{1, "\"frequency\":2412,"},
+               {13, "\"frequency\":2472,"},
+               {14, "\"frequency\":2484,"},
+               {0, "\"frequency\":0,"}};
+  for (const auto &c : cases) {
+    fy::format_dashboard_detection(m, -60, c.channel, line, sizeof(line));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(line, c.expect), c.expect);
+  }
+}
+
+void test_dashboard_json_small_buffer() {
+  const Match m = make_match(Rule::WifiOuiBssid, kFlockMac, "");
+  char line[40];
+  TEST_ASSERT_EQUAL_UINT(0, fy::format_dashboard_detection(m, -60, 6, line, sizeof(line)));
+  TEST_ASSERT_EQUAL_STRING("", line);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
+  RUN_TEST(test_dashboard_methods_follow_upstream);
+  RUN_TEST(test_dashboard_json_wifi_fingerprint);
+  RUN_TEST(test_dashboard_json_ble_name);
+  RUN_TEST(test_dashboard_json_sanitizes_name);
+  RUN_TEST(test_dashboard_json_frequencies);
+  RUN_TEST(test_dashboard_json_small_buffer);
   RUN_TEST(test_every_rule_has_a_device_type);
   RUN_TEST(test_oui_table_size_matches_upstream);
   RUN_TEST(test_primary_signature_is_built);

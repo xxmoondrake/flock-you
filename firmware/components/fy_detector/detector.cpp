@@ -14,9 +14,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 
 #include "detector_internal.h"
 #include "fy_board.h"
+#include "fy_dashboard_json.h"
 #include "fy_detector.h"
 #include "fy_gps.h"
 #include "fy_signatures.h"
@@ -98,17 +100,6 @@ bool should_report(const Match &m) {
 
 // ---- Reporting --------------------------------------------------------------
 
-// Advertised names are untrusted bytes; replace anything that is not
-// printable ASCII so logs cannot carry control sequences.
-void sanitize(const char *in, char *out, size_t cap) {
-  size_t o = 0;
-  for (size_t i = 0; in[i] && o + 1 < cap; i++) {
-    const unsigned char c = static_cast<unsigned char>(in[i]);
-    out[o++] = (c >= 0x20 && c < 0x7f && c != '"' && c != '\\') ? static_cast<char>(c) : '?';
-  }
-  out[o] = '\0';
-}
-
 void report(const Match &m, int8_t rssi, uint8_t channel) {
   g_counters.matches++;
   const RuleInfo &info = rule_info(m.rule);
@@ -135,8 +126,9 @@ void report(const Match &m, int8_t rssi, uint8_t channel) {
   char mac[18];
   snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", m.mac[0], m.mac[1], m.mac[2],
            m.mac[3], m.mac[4], m.mac[5]);
+  // Advertised names are untrusted bytes; logs never carry control sequences.
   char name[sizeof(m.name)];
-  sanitize(m.name, name, sizeof(name));
+  sanitize_name(m.name, name, sizeof(name));
   char where[8];
   if (info.transport == Transport::Ble) {
     snprintf(where, sizeof(where), "ble");
@@ -158,6 +150,14 @@ void report(const Match &m, int8_t rssi, uint8_t channel) {
 
   ESP_LOGI(TAG, "match strength=%s rule=%s mac=%s rssi=%d via=%s name=\"%s\" gps=%s",
            specific ? "specific" : "possible", info.id, mac, rssi, where, name, loc);
+
+#if CONFIG_FY_SERIAL_JSON
+  // The same match as one line in the upstream flock-you format, for its
+  // Flask dashboard. A single printf keeps the line whole between log lines
+  // from other tasks.
+  char json[384];
+  if (format_dashboard_detection(m, rssi, channel, json, sizeof(json))) printf("%s\n", json);
+#endif
 
   fy_detector_match_info mi = {};
   mi.valid = true;
