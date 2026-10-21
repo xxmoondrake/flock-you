@@ -1,0 +1,33 @@
+menu "Detector recording"
+
+    config FY_ENCOUNTER_ABSENCE_S
+        int "Seconds of silence that close an encounter"
+        default 60
+        range 5 3600
+        help
+            Repeated sightings of one device belong to the same encounter
+            until it goes unseen for this long. To be validated for driving,
+            walking, and stationary use.
+
+    config FY_ENCOUNTER_CHECKPOINT_S
+        int "Rewrite interval for a changing encounter (s)"
+        default 60
+        range 10 3600
+        help
+            An open encounter that has changed is rewritten at most this
+            often, which bounds what an abrupt power cut can lose.
+
+    config FY_BATTERY_LOG_INTERVAL_S
+        int "Battery sample interval (s)"
+        default 60
+        range 10 3600
+        help
+            Interval between stored battery samples on boards that can
+            measure a battery. Used to characterise charge and discharge.
+
+    config FY_STORAGE_WARN_PERCENT
+        int "Storage use that triggers an offload warning (%)"
+        default 90
+        range 50 99
+
+endmenu

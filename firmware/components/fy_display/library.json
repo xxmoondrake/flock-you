@@ -1,0 +1,11 @@
+{
+  "name": "fy_display",
+  "version": "0.1.0",
+  "description": "Pure C++ 128x64 monochrome canvas and 5x7 font (host-testable)",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<canvas.cpp>"]
+  }
+}

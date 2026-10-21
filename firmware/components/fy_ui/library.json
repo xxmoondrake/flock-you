@@ -1,0 +1,14 @@
+{
+  "name": "fy_ui",
+  "version": "0.1.0",
+  "description": "OLED screen layouts and button navigation (host-testable); the ESP-IDF task is excluded on host",
+  "license": "MIT",
+  "dependencies": {
+    "fy_display": "*"
+  },
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<ui_layout.cpp>", "+<ui_controller.cpp>"]
+  }
+}

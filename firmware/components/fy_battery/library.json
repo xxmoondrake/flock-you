@@ -1,0 +1,11 @@
+{
+  "name": "fy_battery",
+  "version": "0.1.0",
+  "description": "Battery voltage to charge estimate (host-testable); the ESP-IDF driver is excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<battery_curve.cpp>"]
+  }
+}

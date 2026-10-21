@@ -1,0 +1,50 @@
+menu "Detector battery"
+
+    config FY_BATTERY_FULL_MV
+        int "Battery voltage shown as 100% (mV)"
+        default 4200
+        range 3500 4500
+        help
+            Measured battery voltage that maps to 100%. Tune to the voltage a
+            fully charged battery reads on this board once it has rested off
+            the charger.
+
+    config FY_BATTERY_EMPTY_MV
+        int "Battery voltage shown as 0% (mV)"
+        default 3300
+        range 2800 3900
+        help
+            Measured battery voltage that maps to 0%. Tune to the voltage at
+            which the board should be treated as nearly empty.
+
+    config FY_BATTERY_CUTOFF_MV
+        int "Shut down below this battery voltage (mV)"
+        default 3200
+        range 2900 3700
+        help
+            Protects the cell from deep discharge. When the smoothed
+            measured voltage stays below this for 30 s, the board shows a
+            low-battery notice, saves open encounters, and powers off. The
+            default sits past the knee of a typical single-cell Li-ion
+            discharge curve and above 3.0 V even if the divider reads
+            somewhat low.
+
+    config FY_BATTERY_BOOT_MIN_MV
+        int "Refuse to start below this battery voltage (mV)"
+        default 3350
+        range 3000 3900
+        help
+            Checked before anything else starts. Must be above the cutoff so
+            a battery that recovers slightly at rest does not cycle the board
+            on and off.
+
+    config FY_BATTERY_RECHECK_S
+        int "While off for low battery, re-check every (s)"
+        default 600
+        range 60 86400
+        help
+            A board shut down for low battery wakes briefly on this interval,
+            measures without lighting the display, and starts normally once
+            charging has raised the voltage above the start minimum.
+
+endmenu

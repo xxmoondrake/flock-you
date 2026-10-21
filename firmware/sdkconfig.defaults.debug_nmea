@@ -1,0 +1,3 @@
+# Diagnostics overlay: echo every raw NMEA sentence to the console. The echo
+# includes position data, so use this only for receiver troubleshooting.
+CONFIG_FY_GPS_LOG_RAW_NMEA=y

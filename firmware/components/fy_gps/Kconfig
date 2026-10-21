@@ -1,0 +1,12 @@
+menu "Detector GPS"
+
+    config FY_GPS_LOG_RAW_NMEA
+        bool "Log every raw NMEA sentence"
+        default n
+        help
+            Diagnostics only: echoes each sentence received from the GNSS
+            receiver to the console, including sentences the parser ignores
+            (satellites in view, receiver text such as antenna status). The
+            output includes position data; leave this off in normal use.
+
+endmenu

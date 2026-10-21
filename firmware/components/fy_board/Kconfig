@@ -1,0 +1,17 @@
+menu "Detector board"
+
+    choice FY_BOARD
+        prompt "Target board"
+        default FY_BOARD_XIAO_ESP32S3
+        help
+            Selects the board profile: pins, indicators, and board power
+            controls. Set by sdkconfig.defaults.<platformio env>.
+
+        config FY_BOARD_XIAO_ESP32S3
+            bool "Seeed Studio XIAO ESP32S3"
+
+        config FY_BOARD_HELTEC_V43
+            bool "Heltec WiFi LoRa 32 V4.3"
+    endchoice
+
+endmenu

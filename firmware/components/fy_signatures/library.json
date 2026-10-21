@@ -1,0 +1,11 @@
+{
+  "name": "fy_signatures",
+  "version": "0.1.0",
+  "description": "Pure C++ Wi-Fi and BLE signature matching (host-testable)",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<*.cpp>"]
+  }
+}

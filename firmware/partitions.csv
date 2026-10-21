@@ -1,0 +1,10 @@
+# Layout for 8 MB flash (the Heltec's 16 MB uses the same layout). No OTA:
+# firmware updates are USB-only in the first release. "obslog" holds the
+# record log (encounters and battery samples); uploading firmware does not
+# touch it, so recorded history survives reflashing. 0x710000-0x800000 is
+# left free for later use.
+# Name,    Type, SubType, Offset,   Size
+nvs,       data, nvs,     0x9000,   0x6000
+phy_init,  data, phy,     0xf000,   0x1000
+factory,   app,  factory, 0x10000,  0x300000
+obslog,    data, 0x40,    0x310000, 0x400000

@@ -1,0 +1,11 @@
+{
+  "name": "fy_status_led",
+  "version": "0.1.0",
+  "description": "Status LED blink patterns (host-testable); the ESP-IDF task is excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<status_pattern.cpp>"]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "fy_store",
+  "version": "0.1.0",
+  "description": "Record format, power-loss-tolerant flash ring log, and encounter tracking (host-testable)",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<store.cpp>"]
+  }
+}

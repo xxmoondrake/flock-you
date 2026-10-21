@@ -1,0 +1,11 @@
+{
+  "name": "fy_gps",
+  "version": "0.1.0",
+  "description": "Pure C++ NMEA parser (host-testable); the ESP-IDF driver is excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<nmea.cpp>"]
+  }
+}

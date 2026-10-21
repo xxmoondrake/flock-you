@@ -1,0 +1,14 @@
+menu "Detector status LED"
+
+    config FY_STATUS_LED_PATTERNS
+        bool "Show the operating mode on the status LED"
+        default y if FY_BOARD_XIAO_ESP32S3
+        default n
+        help
+            Solid while booting, one short blink every 3 s while scanning,
+            one every 10 s in standby, and a double blink every 3 s while
+            the Wi-Fi dashboard is active. A specific match shows as a
+            quick triple flash either way. On by default for boards without
+            a display, where the LED is the only status indicator.
+
+endmenu

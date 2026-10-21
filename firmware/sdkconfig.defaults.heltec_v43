@@ -1,0 +1,5 @@
+CONFIG_FY_BOARD_HELTEC_V43=y
+
+# The V4.3 USB-C port is native USB Serial/JTAG, so
+# the console uses it and UART0 (GPIO43/44, header J2) stays undriven.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

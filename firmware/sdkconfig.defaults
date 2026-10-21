@@ -1,0 +1,19 @@
+# Settings shared by every board. Board-specific settings are in
+# sdkconfig.defaults.<platformio env>.
+
+# Flash and partitions (both supported boards provide at least 8 MB).
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Bluetooth: NimBLE host in the observer role only. Scanning is passive, and
+# the detector never advertises or connects.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+
+# 1 kHz tick so channel dwell and short indicator pulses are timed precisely.
+CONFIG_FREERTOS_HZ=1000

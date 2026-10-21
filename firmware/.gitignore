@@ -1,0 +1,7 @@
+# PlatformIO writes the resolved configuration per environment; the
+# sdkconfig.defaults* files are the source of truth.
+sdkconfig.*
+!sdkconfig.defaults
+!sdkconfig.defaults.*
+sdkconfig.old
+managed_components/
