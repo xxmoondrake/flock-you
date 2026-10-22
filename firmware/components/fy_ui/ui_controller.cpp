@@ -9,9 +9,12 @@ namespace {
 
 constexpr const char *kDataMenu[] = {"Save open encounters", "Erase all records", "Back"};
 constexpr const char *kEraseConfirm[] = {"Cancel", "Erase everything"};
+// The renderer marks the active mode and labels the dashboard item by state.
+constexpr const char *kDeviceMenu[] = {"Scanning", "Standby", "WiFi dashboard", "Back"};
 
 enum DataItem : uint8_t { kSaveOpen = 0, kErase = 1, kBack = 2 };
 enum EraseItem : uint8_t { kCancel = 0, kConfirm = 1 };
+enum DeviceItem : uint8_t { kScanning = 0, kStandby = 1, kDashboard = 2, kDeviceBack = 3 };
 
 }  // namespace
 
@@ -28,6 +31,9 @@ const char *const *menu_items(Overlay overlay, size_t *count) {
     case Overlay::EraseConfirm:
       *count = sizeof(kEraseConfirm) / sizeof(kEraseConfirm[0]);
       return kEraseConfirm;
+    case Overlay::DeviceMenu:
+      *count = sizeof(kDeviceMenu) / sizeof(kDeviceMenu[0]);
+      return kDeviceMenu;
     default:
       *count = 0;
       return nullptr;
@@ -56,6 +62,9 @@ Action handle_press(UiState &state, Press press, uint32_t now_ms) {
         state.screen = static_cast<Screen>(next % static_cast<uint8_t>(Screen::Count));
       } else if (state.screen == Screen::Data) {
         state.overlay = Overlay::DataMenu;
+        state.item = 0;
+      } else if (state.screen == Screen::Device) {
+        state.overlay = Overlay::DeviceMenu;
         state.item = 0;
       } else {
         show_message(state, "No menu on this screen", now_ms, 1500);
@@ -88,6 +97,19 @@ Action handle_press(UiState &state, Press press, uint32_t now_ms) {
       if (state.item == kConfirm) return Action::EraseAll;
       show_message(state, "Erase cancelled", now_ms);
       return Action::None;
+
+    case Overlay::DeviceMenu:
+      if (press == Press::Short) {
+        state.item = static_cast<uint8_t>((state.item + 1) % count);
+        return Action::None;
+      }
+      state.overlay = Overlay::None;
+      switch (state.item) {
+        case kScanning: return Action::SelectScanning;
+        case kStandby: return Action::SelectStandby;
+        case kDashboard: return Action::ToggleDashboard;
+        default: return Action::None;
+      }
   }
   return Action::None;
 }

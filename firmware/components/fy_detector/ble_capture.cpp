@@ -3,6 +3,7 @@
 // Passive BLE scanning with the NimBLE host. Passive scanning never sends
 // scan requests, so the detector does not transmit while observing.
 
+#include <atomic>
 #include <cstring>
 
 #include "esp_log.h"
@@ -24,9 +25,15 @@ constexpr uint16_t kScanWindowUnits = 48;
 
 uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
 
+// Scanning runs only while wanted (not in standby or a Wi-Fi dashboard
+// session) and once the host has synced with the controller.
+std::atomic<bool> scan_wanted{true};
+std::atomic<bool> synced{false};
+
 int gap_event(struct ble_gap_event *event, void *arg);
 
 void start_scan() {
+  if (!scan_wanted || !synced || ble_gap_disc_active()) return;
   struct ble_gap_disc_params params = {};
   params.itvl = kScanIntervalUnits;
   params.window = kScanWindowUnits;
@@ -36,7 +43,9 @@ void start_scan() {
   const int rc = ble_gap_disc(own_addr_type, BLE_HS_FOREVER, &params, gap_event, nullptr);
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_gap_disc failed: rc=%d", rc);
+    return;
   }
+  g_counters.ble_scan = true;
 }
 
 // Runs in the NimBLE host task: copy and hand off, no matching here.
@@ -61,7 +70,8 @@ int gap_event(struct ble_gap_event *event, void *) {
       return 0;
     }
     case BLE_GAP_EVENT_DISC_COMPLETE:
-      // Scanning was stopped by the stack; resume.
+      // Scanning was stopped by the stack; resume if still wanted.
+      g_counters.ble_scan = false;
       start_scan();
       return 0;
     default:
@@ -75,11 +85,17 @@ void on_sync() {
     ESP_LOGE(TAG, "address type inference failed: rc=%d", rc);
     return;
   }
+  synced = true;
   start_scan();
-  ESP_LOGI(TAG, "passive scan started (window 30 ms, interval 300 ms)");
+  ESP_LOGI(TAG, "passive scan ready (window 30 ms, interval 300 ms)%s",
+           scan_wanted ? "" : "; paused");
 }
 
-void on_reset(int reason) { ESP_LOGW(TAG, "NimBLE host reset: reason=%d", reason); }
+void on_reset(int reason) {
+  synced = false;
+  g_counters.ble_scan = false;
+  ESP_LOGW(TAG, "NimBLE host reset: reason=%d", reason);
+}
 
 void host_task(void *) {
   nimble_port_run();  // returns only when nimble_port_stop() is called
@@ -98,6 +114,19 @@ esp_err_t ble_capture_start() {
   ble_hs_cfg.reset_cb = on_reset;
   nimble_port_freertos_init(host_task);
   return ESP_OK;
+}
+
+void ble_capture_set_enabled(bool enabled) {
+  scan_wanted = enabled;
+  if (enabled) {
+    start_scan();  // before sync, on_sync starts it
+    return;
+  }
+  if (synced && ble_gap_disc_active()) {
+    const int rc = ble_gap_disc_cancel();
+    if (rc != 0) ESP_LOGE(TAG, "ble_gap_disc_cancel failed: rc=%d", rc);
+  }
+  g_counters.ble_scan = false;
 }
 
 }  // namespace fy::detector

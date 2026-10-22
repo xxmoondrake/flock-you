@@ -3,6 +3,7 @@
 #include "fy_ui.h"
 
 #include <atomic>
+#include <cstdio>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -13,7 +14,9 @@
 #include "fy_battery.h"
 #include "fy_board.h"
 #include "fy_canvas.h"
+#include "fy_dashboard.h"
 #include "fy_detector.h"
+#include "fy_device.h"
 #include "fy_gps.h"
 #include "fy_recorder.h"
 #include "fy_signatures.h"
@@ -78,7 +81,23 @@ void gather(UiModel &m, bool power_off_armed) {
   fy_detector_status d;
   fy_detector_get_status(&d);
   m.wifi_capture = d.wifi_capture;
+  m.ble_scan = d.ble_scan;
   m.channel = d.channel;
+
+  fy_device_status dev;
+  fy_device_get_status(&dev);
+  m.standby = dev.selected == fy::device::Mode::Standby;
+  m.dashboard_active = dev.dashboard;
+  m.dashboard_failed = dev.dashboard_failed;
+  m.dashboard_left_ms = dev.dashboard_remaining_ms;
+  if (dev.dashboard) {
+    fy_dashboard_status dash;
+    fy_dashboard_get_status(&dash);
+    snprintf(m.dashboard_ssid, sizeof(m.dashboard_ssid), "%s", dash.ssid);
+    snprintf(m.dashboard_passkey, sizeof(m.dashboard_passkey), "%s", dash.passkey);
+    snprintf(m.dashboard_address, sizeof(m.dashboard_address), "%s", dash.address);
+    m.dashboard_clients = dash.clients;
+  }
   m.reported = d.reported;
   m.reported_specific = d.reported_specific;
   m.last_valid = d.last.valid;
@@ -186,8 +205,26 @@ void ui_task(void *) {
       } else {
         const fy::ui::Press press = fy::ui::classify_press(now - pressed_since, now);
         armed = false;
+        fy_device_note_activity();  // keeps a dashboard session open
         const Action action = fy::ui::handle_press(state, press, now);
         if (action == Action::PowerOff) power_off();
+        if (action == Action::SelectScanning || action == Action::SelectStandby) {
+          const bool standby = action == Action::SelectStandby;
+          fy_device_select_mode(standby ? fy::device::Mode::Standby : fy::device::Mode::Scanning);
+          fy_device_status dev;
+          fy_device_get_status(&dev);
+          const char *notice = dev.dashboard ? "After dashboard ends"
+                               : standby     ? "Standby: not scanning"
+                                             : "Scanning";
+          fy::ui::show_message(state, notice, now);
+        }
+        if (action == Action::ToggleDashboard) {
+          fy_device_status dev;
+          fy_device_get_status(&dev);
+          fy_device_set_dashboard(!dev.dashboard);
+          fy::ui::show_message(state, dev.dashboard ? "Dashboard stopping" : "Dashboard starting",
+                               now);
+        }
         if (action == Action::SaveOpen) {
           fy_recorder_status r;
           fy_recorder_get_status(&r);

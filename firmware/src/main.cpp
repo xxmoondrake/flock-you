@@ -3,7 +3,8 @@
 // Entry point for the shared detector firmware. Board-specific behavior lives
 // in fy_board; capture, matching, and reporting in fy_detector; the GNSS
 // receiver in fy_gps; the battery monitor in fy_battery; storage in
-// fy_recorder; the screens in fy_ui; and the status LED in fy_status_led.
+// fy_recorder; the screens in fy_ui; the status LED in fy_status_led; modes
+// in fy_device; and the Wi-Fi dashboard in fy_dashboard.
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -16,6 +17,7 @@
 #include "fy_battery.h"
 #include "fy_board.h"
 #include "fy_detector.h"
+#include "fy_device.h"
 #include "fy_gps.h"
 #include "fy_recorder.h"
 #include "fy_status_led.h"
@@ -90,6 +92,7 @@ extern "C" void app_main(void) {
   fy_battery_set_critical_handler(on_battery_critical);
   optional("recorder", fy_recorder_start());
   ESP_ERROR_CHECK(fy_detector_start());
-  fy_status_led_set_mode(fy::status::Mode::Scanning);
+  // Every boot starts scanning with the Wi-Fi dashboard off.
+  optional("device modes", fy_device_start());
   optional("display", fy_ui_start());
 }

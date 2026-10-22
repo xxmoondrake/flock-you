@@ -5,7 +5,7 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 | Environment | Board | Status |
 | --- | --- | --- |
 | `xiao_esp32s3` | Seeed Studio XIAO ESP32S3 | Runs. Status LED on GPIO21; no display. GPS disabled until a breakout's wiring and supply are confirmed. |
-| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. OLED screens, button navigation, battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
+| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. Four OLED screens with button navigation, scanning and standby modes, a minimal Wi-Fi dashboard, battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
 
 ## Behavior
 
@@ -25,10 +25,17 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 - **Home:** battery percentage and voltage, UTC or uptime, capture state, GPS state and coordinates, match counts, last match. A specific match inverts the title row for 10 s. Without a fix, the coordinates row shows `view N sig N ant OK|OPEN|SHORT|?` (satellites in view, satellites with signal, antenna report). A passive patch antenna can read `OPEN` and still work; satellites with signal is the number that matters. Past the storage warning threshold, `STORAGE N% OFFLOAD` replaces the first match row.
 - **Detections:** distinct devices per device type, this session and in stored history; possible types are marked `?`.
 - **Data:** record counts, storage use (highlighted past the warning threshold), oldest record date. Menu: save open encounters, or erase all records behind a confirmation that starts on "Cancel".
+- **Device:** the selected mode, what is detecting, and the Wi-Fi dashboard. Menu: Scanning, Standby, and a separate Start/Stop WiFi dashboard item. While the dashboard runs, the screen shows the time left, the SSID, the passkey (only while it is still the generated one), the page address, and connected clients.
 
 **Heltec button** (PRG, as in Meshtastic): a short press moves to the next screen or menu item; a hold of about 0.5 s opens the menu or selects; a hold of about 4 s, then release, saves and powers off (only after 30 s of uptime). A press wakes the board.
 
-**Status LED.** Solid while booting, then one short blink every 3 s while scanning. Default on the XIAO; the Heltec uses its LED only for match flashes.
+**Modes.** Every boot starts in **Scanning**. **Standby** keeps the board on with Wi-Fi and BLE detection stopped; GPS, recording, and the battery monitor keep running. The Home screen's capture row turns inverted in standby and during a dashboard session, so it never implies detection that is not running.
+
+**Wi-Fi dashboard (minimal).** Starting it from the Device menu pauses Wi-Fi and BLE detection and turns the Wi-Fi radio into a WPA3-Personal access point (SAE only, protected management frames required, at most 2 clients) serving a read-only status page at `http://192.168.4.1/`: battery, GPS fix state, match counts, detections by type, and storage. The page has no location, scripts, or automatic refresh. The SSID and a temporary passkey are generated per device on first use from the hardware RNG and kept in NVS; the passkey is never logged. A session ends when stopped from the menu, after 10 minutes without a button press or page load, or on reboot, and the selected mode then resumes. Ending a session also releases the access point's network interface and DHCP server; only lwIP's core thread stays, since ESP-IDF cannot shut it down once started. Changing the passkey, HTTPS, login, and export belong to the planned full dashboard. On recent Android versions the browser asks once for the "Nearby devices" permission before it can open a local address such as the status page.
+
+On boards without a display (the XIAO), five quick presses of the BOOT button (each under 0.5 s, under 1 s apart) start or stop the Wi-Fi dashboard instead of a menu item, and the access point uses a shared passkey set at build time (`FY_DASHBOARD_PASSKEY`, `fy-dashboard` in the XIAO's defaults) because there is no screen to show a generated one. Anyone who knows a shared passkey can join while that device's dashboard is on.
+
+**Status LED.** Solid while booting, one short blink every 3 s while scanning, one every 10 s in standby, and a double blink every 3 s while the Wi-Fi dashboard runs. Default on the XIAO; the Heltec uses its LED only for match flashes.
 
 **Status lines** every 30-60 s: capture counts, queue drops, truncations, free heap, GPS health, battery, storage use.
 
@@ -47,12 +54,15 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 | `FY_STATUS_LED_PATTERNS` | XIAO only | Show the operating mode on the LED |
 | `FY_GPS_LOG_RAW_NMEA` | off | Echo raw NMEA to the console (`heltec_v43_debug_nmea`) |
 | `FY_SERIAL_JSON` | on | Print upstream dashboard JSON for each reported match |
+| `FY_DASHBOARD_SSID_PREFIX` | `FY-` | Access point name prefix; four random characters follow |
+| `FY_DASHBOARD_CHANNEL` | 6 | Access point channel |
+| `FY_DASHBOARD_IDLE_S` | 600 | End a dashboard session after this long without use |
+| `FY_DASHBOARD_PASSKEY` | empty; `fy-dashboard` on the XIAO | Shared Wi-Fi passkey for boards without a display; empty generates one per device |
 
 ## Planned
 
 - Signature review against the device families in datafx/alpr_detector, taking identifiers only, each checked against a primary source (IEEE or Bluetooth SIG registry, or field captures).
-- Browser dashboard (USB networking on the XIAO; a temporary Wi-Fi access point started from the Heltec menu) with per-device authentication, CSV and JSON export, and clearing.
-- Temporary Wi-Fi sessions: Wi-Fi detection paused, shown on the OLED and LED (double blink every 3 s), ending after 10 minutes of inactivity.
+- Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing; USB networking on the XIAO.
 - GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.
 - Battery thresholds calibrated from recorded charge and discharge data.
@@ -101,6 +111,8 @@ The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds t
 | `components/fy_display` | 128x64 canvas, 5x7 font | All |
 | `components/fy_ui` | Screen layouts and navigation, display and button task | Layouts, navigation |
 | `components/fy_status_led` | LED patterns, LED task | Patterns |
+| `components/fy_device` | Mode and dashboard-session logic, device task applying it to the radios and LED | Mode logic |
+| `components/fy_dashboard` | Credentials and status page, WPA3 access point and HTTP server | Credentials, page |
 | `components/fy_battery` | Voltage-to-percent estimate, measurement driver | Estimate |
 | `components/fy_store` | Record format, power-loss-tolerant ring log, encounter grouping | All |
 | `components/fy_recorder` | Writes encounters and battery samples to `obslog` | |

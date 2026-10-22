@@ -47,6 +47,7 @@ UiModel base_model() {
   UiModel m = {};
   m.now_ms = 754000;
   m.wifi_capture = true;
+  m.ble_scan = true;
   m.channel = 11;
   m.gps_available = true;
   m.gps_receiving = true;
@@ -328,6 +329,93 @@ void test_low_battery_notice() {
   TEST_ASSERT_TRUE(differs);  // different reason line
 }
 
+// ---- Device management ---------------------------------------------------------
+
+void test_home_flags_standby_and_dashboard() {
+  Canvas scanning, standby, dashboard;
+  UiModel m = base_model();
+  fy::ui::render_home(scanning, m);
+  TEST_ASSERT_FALSE(scanning.pixel(127, 12));  // capture row not inverted
+
+  m.standby = true;
+  m.wifi_capture = false;
+  m.ble_scan = false;
+  fy::ui::render_home(standby, m);
+  maybe_write_pbm(standby, "screen_home_standby");
+  TEST_ASSERT_TRUE(standby.pixel(127, 12));  // inverted "STANDBY: NOT SCANNING"
+
+  m.standby = false;
+  m.dashboard_active = true;
+  fy::ui::render_home(dashboard, m);
+  maybe_write_pbm(dashboard, "screen_home_dashboard");
+  TEST_ASSERT_TRUE(dashboard.pixel(127, 12));
+  bool differs = false;
+  for (int x = 0; x < 128; x++) differs |= standby.pixel(x, 12) != dashboard.pixel(x, 12);
+  TEST_ASSERT_TRUE(differs);
+}
+
+void test_device_screen_without_dashboard() {
+  UiModel m = base_model();
+  Canvas c;
+  fy::ui::render_device(c, m);
+  maybe_write_pbm(c, "screen_device");
+  TEST_ASSERT_TRUE(c.pixel(127, 3));                    // inverted title bar
+  TEST_ASSERT_FALSE(c.pixel(127, 23));                  // dashboard row not inverted
+  TEST_ASSERT_EQUAL_INT(0, lit_pixels(c, 0, 38, 128, 8));  // no failure notice
+  TEST_ASSERT_TRUE(lit_pixels(c, 0, 56, 128, 8) > 0);   // menu hint
+
+  m.dashboard_failed = true;
+  Canvas failed;
+  fy::ui::render_device(failed, m);
+  TEST_ASSERT_TRUE(lit_pixels(failed, 0, 38, 128, 8) > 0);
+}
+
+void test_device_screen_shows_connection_details() {
+  UiModel m = base_model();
+  m.dashboard_active = true;
+  m.dashboard_left_ms = 540000;
+  snprintf(m.dashboard_ssid, sizeof(m.dashboard_ssid), "FY-K7QM");
+  snprintf(m.dashboard_passkey, sizeof(m.dashboard_passkey), "k7qm-3xtd-ap9w");
+  snprintf(m.dashboard_address, sizeof(m.dashboard_address), "192.168.4.1");
+  m.dashboard_clients = 1;
+  Canvas with_key;
+  fy::ui::render_device(with_key, m);
+  maybe_write_pbm(with_key, "screen_device_dashboard");
+  TEST_ASSERT_TRUE(with_key.pixel(127, 23));                 // inverted time-left row
+  TEST_ASSERT_TRUE(lit_pixels(with_key, 0, 29, 128, 8) > 0);  // SSID
+  TEST_ASSERT_TRUE(lit_pixels(with_key, 0, 38, 128, 8) > 0);  // passkey
+  TEST_ASSERT_TRUE(lit_pixels(with_key, 0, 47, 128, 8) > 0);  // address
+
+  // Once the passkey has been changed it is never shown.
+  m.dashboard_passkey[0] = '\0';
+  Canvas changed;
+  fy::ui::render_device(changed, m);
+  TEST_ASSERT_EQUAL_INT(0, lit_pixels(changed, 0, 38, 128, 8));
+}
+
+void test_device_menu_renders_through_dispatch() {
+  UiModel m = base_model();
+  UiState s;
+  s.screen = fy::ui::Screen::Device;
+  s.overlay = fy::ui::Overlay::DeviceMenu;
+  s.item = 2;
+  Canvas menu;
+  fy::ui::render(menu, m, s);
+  maybe_write_pbm(menu, "screen_device_menu");
+  TEST_ASSERT_TRUE(menu.pixel(127, 34));   // highlighted dashboard item
+  TEST_ASSERT_FALSE(menu.pixel(127, 24));  // standby item not highlighted
+
+  // The dashboard item's label follows its state.
+  m.dashboard_active = true;
+  Canvas stop;
+  fy::ui::render(stop, m, s);
+  bool differs = false;
+  for (int y = 33; y < 41; y++) {
+    for (int x = 0; x < 128; x++) differs |= menu.pixel(x, y) != stop.pixel(x, y);
+  }
+  TEST_ASSERT_TRUE(differs);
+}
+
 void test_message_uses_bottom_row() {
   UiModel m = base_model();
   UiState s;
@@ -346,6 +434,10 @@ int main(int, char **) {
   RUN_TEST(test_menu_and_confirm_render_through_dispatch);
   RUN_TEST(test_erase_progress_and_power_off_prompts);
   RUN_TEST(test_message_uses_bottom_row);
+  RUN_TEST(test_home_flags_standby_and_dashboard);
+  RUN_TEST(test_device_screen_without_dashboard);
+  RUN_TEST(test_device_screen_shows_connection_details);
+  RUN_TEST(test_device_menu_renders_through_dispatch);
   RUN_TEST(test_low_battery_notice);
   RUN_TEST(test_pixels_use_ssd1306_page_order);
   RUN_TEST(test_out_of_range_pixels_are_clipped);

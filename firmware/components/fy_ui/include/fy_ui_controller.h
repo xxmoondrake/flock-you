@@ -18,10 +18,18 @@ constexpr uint32_t kLongPressMs = 500;
 constexpr uint32_t kPowerOffHoldMs = 4000;
 constexpr uint32_t kPowerOffMinUptimeMs = 30000;
 
-enum class Screen : uint8_t { Home = 0, Detections, Data, Count };
-enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm };
+enum class Screen : uint8_t { Home = 0, Detections, Data, Device, Count };
+enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm, DeviceMenu };
 enum class Press : uint8_t { Short, Long, PowerOff };
-enum class Action : uint8_t { None, SaveOpen, EraseAll, PowerOff };
+enum class Action : uint8_t {
+  None,
+  SaveOpen,
+  EraseAll,
+  PowerOff,
+  SelectScanning,
+  SelectStandby,
+  ToggleDashboard,  // start the Wi-Fi dashboard if it is off, stop it if on
+};
 
 struct UiState {
   Screen screen = Screen::Home;

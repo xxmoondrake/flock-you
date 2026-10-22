@@ -1,0 +1,36 @@
+menu "Detector Wi-Fi dashboard"
+
+    config FY_DASHBOARD_SSID_PREFIX
+        string "Access point name prefix"
+        default "FY-"
+        help
+            The access point is named this prefix followed by four random
+            characters chosen on first use, for example FY-K7QM. Avoid names
+            that announce what the device is.
+
+    config FY_DASHBOARD_PASSKEY
+        string "Shared access point passkey (empty: one per device)"
+        default ""
+        help
+            Empty: each device generates its own temporary passkey on first
+            use and shows it on its display. Boards without a display (the
+            XIAO) use this shared passkey instead; it must be 8-63
+            characters. Anyone who knows a shared passkey can join any
+            device built with it while that device's dashboard is on.
+
+    config FY_DASHBOARD_CHANNEL
+        int "Access point channel"
+        default 6
+        range 1 13
+
+    config FY_DASHBOARD_IDLE_S
+        int "End a dashboard session after this many seconds without use"
+        default 600
+        range 60 3600
+        help
+            A session ends when nobody has pressed the button or loaded the
+            status page for this long. Detection then resumes in the selected
+            mode. The page does not refresh by itself, so an open browser
+            tab does not keep the session alive.
+
+endmenu

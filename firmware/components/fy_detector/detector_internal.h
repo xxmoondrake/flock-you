@@ -54,6 +54,7 @@ struct Counters {
   std::atomic<uint32_t> reported{0};
   std::atomic<uint8_t> channel{0};
   std::atomic<bool> wifi_capture{false};
+  std::atomic<bool> ble_scan{false};
 };
 
 extern Counters g_counters;
@@ -67,5 +68,6 @@ esp_err_t wifi_capture_start();
 void wifi_capture_set_enabled(bool enabled);
 
 esp_err_t ble_capture_start();
+void ble_capture_set_enabled(bool enabled);
 
 }  // namespace fy::detector

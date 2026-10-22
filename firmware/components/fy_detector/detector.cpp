@@ -209,10 +209,11 @@ void status_task(void *) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(kStatusIntervalMs));
     ESP_LOGI(TAG,
-             "status board=%s wifi=%s ch=%u hops=%lu wifi_frames=%lu wifi_cand=%lu "
+             "status board=%s wifi=%s ble=%s ch=%u hops=%lu wifi_frames=%lu wifi_cand=%lu "
              "wifi_drop=%lu wifi_trunc=%lu ble_adv=%lu ble_drop=%lu ble_oversize=%lu "
              "matches=%lu reported=%lu heap=%lu heap_min=%lu",
              fy_board_name(), g_counters.wifi_capture.load() ? "on" : "paused",
+             g_counters.ble_scan.load() ? "on" : "paused",
              static_cast<unsigned>(g_counters.channel.load()),
              static_cast<unsigned long>(g_counters.wifi_hops.load()),
              static_cast<unsigned long>(g_counters.wifi_frames.load()),
@@ -272,10 +273,13 @@ esp_err_t fy_detector_start() {
 
 void fy_detector_set_wifi_capture(bool enabled) { wifi_capture_set_enabled(enabled); }
 
+void fy_detector_set_ble_scan(bool enabled) { ble_capture_set_enabled(enabled); }
+
 void fy_detector_set_sighting_hook(fy_detector_sighting_hook hook) { sighting_hook = hook; }
 
 void fy_detector_get_status(fy_detector_status *out) {
   out->wifi_capture = g_counters.wifi_capture.load();
+  out->ble_scan = g_counters.ble_scan.load();
   out->channel = g_counters.channel.load();
   out->wifi_frames = g_counters.wifi_frames.load();
   out->ble_adverts = g_counters.ble_adverts.load();

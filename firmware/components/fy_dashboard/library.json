@@ -1,0 +1,11 @@
+{
+  "name": "fy_dashboard",
+  "version": "0.1.0",
+  "description": "Wi-Fi dashboard credentials and status page (host-testable); the ESP-IDF access point and server are excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<dashboard_text.cpp>"]
+  }
+}

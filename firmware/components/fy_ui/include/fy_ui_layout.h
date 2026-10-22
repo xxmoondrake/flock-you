@@ -25,7 +25,18 @@ struct UiModel {
   uint32_t now_ms;
 
   bool wifi_capture;
+  bool ble_scan;
   uint8_t channel;
+
+  // Device management: the selected mode and the Wi-Fi dashboard session.
+  bool standby;  // standby selected (not scanning)
+  bool dashboard_active;
+  bool dashboard_failed;  // the last start attempt failed
+  uint32_t dashboard_left_ms;
+  char dashboard_ssid[33];
+  char dashboard_passkey[64];  // empty once the passkey has been changed
+  char dashboard_address[16];
+  uint8_t dashboard_clients;
 
   bool gps_available;
   bool gps_receiving;
@@ -95,6 +106,7 @@ void render_low_battery(display::Canvas &canvas, uint16_t mv, bool starting);
 void render_home(display::Canvas &canvas, const UiModel &m);
 void render_detections(display::Canvas &canvas, const UiModel &m);
 void render_data(display::Canvas &canvas, const UiModel &m);
+void render_device(display::Canvas &canvas, const UiModel &m);
 
 // Formats an elapsed time compactly: "12s", "4m", "3h", "2d".
 void format_age(uint32_t ms, char *out, int cap);

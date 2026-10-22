@@ -15,8 +15,11 @@
 esp_err_t fy_detector_start();
 
 // Stops or resumes Wi-Fi capture and channel hopping. BLE scanning is not
-// affected. Intended for temporary Wi-Fi access sessions.
+// affected. Used for standby and Wi-Fi dashboard sessions.
 void fy_detector_set_wifi_capture(bool enabled);
+
+// Stops or resumes passive BLE scanning. Wi-Fi capture is not affected.
+void fy_detector_set_ble_scan(bool enabled);
 
 struct fy_detector_match_info {
   bool valid;
@@ -30,6 +33,7 @@ struct fy_detector_match_info {
 
 struct fy_detector_status {
   bool wifi_capture;
+  bool ble_scan;
   uint8_t channel;
   uint32_t wifi_frames;
   uint32_t ble_adverts;

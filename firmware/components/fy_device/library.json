@@ -1,0 +1,11 @@
+{
+  "name": "fy_device",
+  "version": "0.1.0",
+  "description": "Device modes and dashboard session timing (host-testable); the ESP-IDF task is excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<device_mode.cpp>"]
+  }
+}

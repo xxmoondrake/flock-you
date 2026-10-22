@@ -27,6 +27,8 @@ void test_short_press_cycles_screens() {
   handle_press(s, Press::Short, 0);
   TEST_ASSERT_EQUAL(Screen::Data, s.screen);
   handle_press(s, Press::Short, 0);
+  TEST_ASSERT_EQUAL(Screen::Device, s.screen);
+  handle_press(s, Press::Short, 0);
   TEST_ASSERT_EQUAL(Screen::Home, s.screen);
 }
 
@@ -92,6 +94,34 @@ void test_power_off_from_anywhere() {
   TEST_ASSERT_EQUAL(Action::PowerOff, handle_press(s, Press::PowerOff, 0));
 }
 
+void test_device_menu_selects_modes_and_dashboard() {
+  size_t n = 0;
+  menu_items(Overlay::DeviceMenu, &n);
+  TEST_ASSERT_EQUAL_UINT(4, n);
+
+  const Action expected[] = {Action::SelectScanning, Action::SelectStandby,
+                             Action::ToggleDashboard, Action::None};
+  for (size_t item = 0; item < n; item++) {
+    UiState s;
+    s.screen = Screen::Device;
+    handle_press(s, Press::Long, 0);
+    TEST_ASSERT_EQUAL(Overlay::DeviceMenu, s.overlay);
+    TEST_ASSERT_EQUAL_UINT8(0, s.item);
+    for (size_t i = 0; i < item; i++) handle_press(s, Press::Short, 0);
+    TEST_ASSERT_EQUAL(expected[item], handle_press(s, Press::Long, 0));
+    TEST_ASSERT_EQUAL(Overlay::None, s.overlay);  // every choice closes the menu
+    TEST_ASSERT_EQUAL(Screen::Device, s.screen);
+  }
+}
+
+void test_dashboard_is_separate_from_mode_items() {
+  size_t n = 0;
+  const char *const *items = menu_items(Overlay::DeviceMenu, &n);
+  TEST_ASSERT_EQUAL_STRING("Scanning", items[0]);
+  TEST_ASSERT_EQUAL_STRING("Standby", items[1]);
+  TEST_ASSERT_EQUAL_STRING("WiFi dashboard", items[2]);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_press_classification);
@@ -101,5 +131,7 @@ int main(int, char **) {
   RUN_TEST(test_menu_items_wrap_and_back_closes);
   RUN_TEST(test_erase_requires_moving_off_cancel);
   RUN_TEST(test_power_off_from_anywhere);
+  RUN_TEST(test_device_menu_selects_modes_and_dashboard);
+  RUN_TEST(test_dashboard_is_separate_from_mode_items);
   return UNITY_END();
 }

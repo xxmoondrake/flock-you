@@ -5,7 +5,8 @@
 // 0 Home
 //   row 0  battery (percent and voltage) or the title, and UTC time or
 //          uptime; an inverted banner replaces it after a specific match
-//   row 1  Wi-Fi and BLE capture state
+//   row 1  Wi-Fi and BLE capture state; inverted in standby or while the
+//          Wi-Fi dashboard runs, since neither detects
 //   row 2  GPS state
 //   row 3  current coordinates while the fix is current; otherwise receiver
 //          diagnostics (satellites in view, with signal, antenna state)
@@ -16,6 +17,9 @@
 //
 // 1 Detections: distinct devices per device type, this session and stored.
 // 2 Data management: storage use and history; hold for the data menu.
+// 3 Device management: mode and Wi-Fi dashboard; hold for the device menu.
+//   While the dashboard runs it shows the SSID, the passkey (only while it
+//   is still the generated one), and the status page address.
 //
 // Menus, the erase confirmation, erase progress, and the power-off prompt
 // replace the screen while active. Transient notices use the bottom row.
@@ -119,10 +123,21 @@ void render_menu(Canvas &c, const UiModel &m, const UiState &s) {
     text_at(c, 11, buf);
     text_at(c, 20, "battery samples");
     y = 31;
+  } else if (s.overlay == Overlay::DeviceMenu) {
+    title(c, "DEVICE MENU");
   } else {
     title(c, "DATA MENU");
   }
-  for (size_t i = 0; i < count; i++, y += 10) text_at(c, y, items[i], i == s.item);
+  for (size_t i = 0; i < count; i++, y += 10) {
+    const char *label = items[i];
+    if (s.overlay == Overlay::DeviceMenu) {
+      // Mark the selected mode; name the dashboard item by what it will do.
+      if (i == 0 && !m.standby) label = "Scanning - selected";
+      if (i == 1 && m.standby) label = "Standby - selected";
+      if (i == 2) label = m.dashboard_active ? "Stop WiFi dashboard" : "Start WiFi dashboard";
+    }
+    text_at(c, y, label, i == s.item);
+  }
   text_at(c, 56, "press:next hold:ok");
 }
 
@@ -212,13 +227,21 @@ void render_home(Canvas &c, const UiModel &m) {
     right_aligned(c, kRowY[0], buf);
   }
 
-  // Row 1: capture state.
-  if (m.wifi_capture) {
-    snprintf(buf, sizeof(buf), "WiFi ch%-2u  BLE scan", m.channel);
+  // Row 1: capture state. Standby and the dashboard are shown inverted so the
+  // screen never implies detection that is not running.
+  if (m.dashboard_active) {
+    line(c, 1, "DASHBOARD ON, NO SCAN", true);
+  } else if (m.standby) {
+    line(c, 1, "STANDBY: NOT SCANNING", true);
   } else {
-    snprintf(buf, sizeof(buf), "WiFi PAUSED BLE scan");
+    const char *ble = m.ble_scan ? "scan" : "off";
+    if (m.wifi_capture) {
+      snprintf(buf, sizeof(buf), "WiFi ch%-2u  BLE %s", m.channel, ble);
+    } else {
+      snprintf(buf, sizeof(buf), "WiFi PAUSED BLE %s", ble);
+    }
+    line(c, 1, buf);
   }
-  line(c, 1, buf);
 
   // Rows 2-3: GPS. Coordinates only while the fix is current; otherwise the
   // receiver diagnostics explain why there is no fix.
@@ -304,6 +327,43 @@ void render_data(Canvas &c, const UiModel &m) {
   text_at(c, kListY[5], "Hold: data menu");
 }
 
+void render_device(Canvas &c, const UiModel &m) {
+  c.clear();
+  title(c, "DEVICE MANAGEMENT");
+  char buf[96];
+  snprintf(buf, sizeof(buf), "Mode: %s", m.standby ? "Standby" : "Scanning");
+  text_at(c, kListY[0], buf);
+
+  if (!m.dashboard_active) {
+    const char *detecting = m.wifi_capture && m.ble_scan ? "Detecting WiFi + BLE"
+                            : m.wifi_capture             ? "Detecting WiFi only"
+                            : m.ble_scan                 ? "Detecting BLE only"
+                                                         : "Not detecting";
+    text_at(c, kListY[1], detecting);
+    text_at(c, kListY[2], "WiFi dashboard off");
+    if (m.dashboard_failed) text_at(c, kListY[3], "Last start failed");
+    text_at(c, kListY[5], "Hold: device menu");
+    return;
+  }
+
+  // Dashboard session: how to connect. The passkey shows only while it is
+  // still the generated one.
+  char left[8];
+  format_age(m.dashboard_left_ms, left, sizeof(left));
+  snprintf(buf, sizeof(buf), "Dashboard %s left", left);
+  text_at(c, kListY[1], buf, true);
+  snprintf(buf, sizeof(buf), "SSID %s", m.dashboard_ssid);
+  text_at(c, kListY[2], buf);
+  if (m.dashboard_passkey[0]) {
+    snprintf(buf, sizeof(buf), "Key  %s", m.dashboard_passkey);
+    text_at(c, kListY[3], buf);
+  }
+  snprintf(buf, sizeof(buf), "http://%s", m.dashboard_address[0] ? m.dashboard_address : "?");
+  text_at(c, kListY[4], buf);
+  snprintf(buf, sizeof(buf), "Clients %u", m.dashboard_clients);
+  text_at(c, kListY[5], buf);
+}
+
 void render(Canvas &c, const UiModel &m, const UiState &s) {
   if (m.erasing) {
     render_erasing(c, m);
@@ -322,6 +382,9 @@ void render(Canvas &c, const UiModel &m, const UiState &s) {
         break;
       case Screen::Data:
         render_data(c, m);
+        break;
+      case Screen::Device:
+        render_device(c, m);
         break;
       default:
         render_home(c, m);

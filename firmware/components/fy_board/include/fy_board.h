@@ -64,7 +64,8 @@ bool fy_board_battery_config_get(fy_board_battery_config *out);
 
 // ---- User button and power ------------------------------------------------------
 
-// True when the board has a user button for on-device navigation.
+// True when the board has a user button: screen navigation on boards with a
+// display, Wi-Fi dashboard activation (five quick presses) otherwise.
 bool fy_board_has_button();
 // True while the user button is held down.
 bool fy_board_button_pressed();
