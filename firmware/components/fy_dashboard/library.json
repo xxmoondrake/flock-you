@@ -6,6 +6,6 @@
   "build": {
     "srcDir": ".",
     "includeDir": "include",
-    "srcFilter": ["+<dashboard_text.cpp>"]
+    "srcFilter": ["+<dashboard_text.cpp>", "+<portal.cpp>"]
   }
 }

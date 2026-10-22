@@ -37,6 +37,8 @@ On boards without a display (the XIAO), five quick presses of the BOOT button (e
 
 **USB dashboard (XIAO).** The native USB port is a composite device: a CDC-ACM serial port that carries the console, and a CDC-NCM network adapter (Windows 11, Linux, and Android include a driver). The XIAO is `192.168.7.1`; its DHCP server gives the host an address but no gateway or DNS, so the host keeps its own internet connection. The same read-only status page is served at `http://192.168.7.1/` whenever the cable is connected, and detection keeps running. Early boot logs still appear on USB Serial/JTAG before the USB device starts; panic output after that is not visible over USB. On Android the browser uses the phone's default network, so the page loads only while mobile data and Wi-Fi are off (for example in airplane mode); Windows reaches it with other networks up.
 
+**Captive-portal test builds.** The `xiao_esp32s3_portal` and `heltec_v43_portal` environments enable `FY_DASHBOARD_CAPTIVE_PORTAL` to evaluate whether phones open the page in their "sign in to network" window with mobile data still on. The dashboard networks then offer the device as gateway and DNS server, a DNS server answers every name with the device's address, and everything except the status page redirects to it, including the connectivity checks Android, iOS, and Windows make. Those automatic checks do not count as activity for the Wi-Fi session timeout. The design does not adopt a captive portal; these builds exist only to test one.
+
 **Status LED.** Solid while booting, one short blink every 3 s while scanning, one every 10 s in standby, and a double blink every 3 s while the Wi-Fi dashboard runs. Default on the XIAO; the Heltec uses its LED only for match flashes.
 
 **Status lines** every 30-60 s: capture counts, queue drops, truncations, free heap, GPS health, battery, storage use.
@@ -61,6 +63,7 @@ On boards without a display (the XIAO), five quick presses of the BOOT button (e
 | `FY_DASHBOARD_IDLE_S` | 600 | End a dashboard session after this long without use |
 | `FY_DASHBOARD_PASSKEY` | empty; `fy-dashboard` on the XIAO | Shared Wi-Fi passkey for boards without a display; empty generates one per device |
 | `FY_USB_DASHBOARD` | on when TinyUSB NCM and CDC are enabled (XIAO) | USB console and USB network status page |
+| `FY_DASHBOARD_CAPTIVE_PORTAL` | off | Test only: present the dashboards as a captive portal (see below) |
 
 ## Planned
 

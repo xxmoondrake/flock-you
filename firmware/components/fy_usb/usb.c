@@ -113,6 +113,8 @@ static esp_err_t start_netif(const uint8_t device_mac[6])
     ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(s_netif, ESP_NETIF_OP_SET,
                                                ESP_NETIF_DOMAIN_NAME_SERVER, &off, sizeof(off)),
                         TAG, "no dns");
+    // The captive-portal test build offers both after all.
+    ESP_RETURN_ON_ERROR(fy_dashboard_portal_dhcp(s_netif), TAG, "portal dhcp");
     esp_netif_action_start(s_netif, NULL, 0, NULL);
     esp_netif_action_connected(s_netif, NULL, 0, NULL);
     return ESP_OK;

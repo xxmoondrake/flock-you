@@ -33,4 +33,18 @@ menu "Detector Wi-Fi dashboard"
             mode. The page does not refresh by itself, so an open browser
             tab does not keep the session alive.
 
+    config FY_DASHBOARD_CAPTIVE_PORTAL
+        bool "Test only: present the dashboards as a captive portal"
+        default n
+        help
+            For evaluating phone behaviour; the design plan does not adopt a
+            captive portal. The dashboard networks' DHCP servers also offer
+            the device as gateway and DNS server, a DNS server answers every
+            name with the device's address, and the HTTP server redirects
+            everything except the status page there, including operating
+            systems' connectivity checks. Phones then open the page in their
+            "sign in to network" window with mobile data still on. On a PC
+            the USB link also carries a default route (normally outranked by
+            faster links). Built by the *_portal environments.
+
 endmenu

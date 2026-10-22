@@ -32,6 +32,11 @@
 #include "fy_recorder.h"
 #include "fy_signatures.h"
 
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+#include "lwip/sockets.h"
+
+#include "fy_portal.h"
+#endif
 
 namespace {
 
@@ -171,7 +176,102 @@ int gather_page(fy::dashboard::StatusPage &p, fy::dashboard::PageRow *rows) {
   return n;
 }
 
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+// The device's address on the connection a request arrived on. The server
+// listens dual-stack, so IPv4 clients appear as IPv4-mapped IPv6 addresses.
+void local_address(httpd_req_t *req, char *out, size_t cap) {
+  out[0] = '\0';
+  sockaddr_storage addr = {};
+  socklen_t len = sizeof(addr);
+  if (getsockname(httpd_req_to_sockfd(req), reinterpret_cast<sockaddr *>(&addr), &len) != 0) {
+    return;
+  }
+  if (addr.ss_family == AF_INET) {
+    inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in *>(&addr)->sin_addr, out, cap);
+  } else if (addr.ss_family == AF_INET6) {
+    const auto *a6 = reinterpret_cast<sockaddr_in6 *>(&addr);
+    inet_ntop(AF_INET, &a6->sin6_addr.un.u32_addr[3], out, cap);
+  }
+}
+
+// Redirects everything except the status page itself, so phones treat the
+// network as a captive portal and open the page in their sign-in window.
+bool redirect_if_needed(httpd_req_t *req) {
+  char local_ip[16];
+  local_address(req, local_ip, sizeof(local_ip));
+  char host[64] = "";
+  const esp_err_t err = httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host));
+  if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) snprintf(host, sizeof(host), "?");
+  if (fy::portal::route_request(host, req->uri, local_ip) == fy::portal::Route::Page) return false;
+  char location[32];
+  snprintf(location, sizeof(location), "http://%s/", local_ip[0] ? local_ip : "192.168.4.1");
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", location);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, nullptr, 0);
+  return true;
+}
+
+// A DNS server that answers every name with this device's address on the
+// asking client's network. Both dashboard networks are /24s with the device
+// at .1, so the answer is the client's address with the last byte set to 1.
+std::atomic<bool> dns_running{false};
+TaskHandle_t dns_task_handle = nullptr;
+int dns_socket = -1;
+
+void dns_task(void *) {
+  uint8_t query[512];
+  uint8_t reply[512];
+  while (dns_running) {
+    sockaddr_in src = {};
+    socklen_t src_len = sizeof(src);
+    const int n = recvfrom(dns_socket, query, sizeof(query), 0,
+                           reinterpret_cast<sockaddr *>(&src), &src_len);
+    if (n <= 0) continue;  // timeout: check whether to keep running
+    uint8_t ip[4];
+    memcpy(ip, &src.sin_addr.s_addr, sizeof(ip));
+    ip[3] = 1;
+    const size_t len = fy::portal::build_dns_reply(query, static_cast<size_t>(n), ip, reply,
+                                                   sizeof(reply));
+    if (len) {
+      sendto(dns_socket, reply, len, 0, reinterpret_cast<sockaddr *>(&src), src_len);
+    }
+  }
+  close(dns_socket);
+  dns_socket = -1;
+  dns_task_handle = nullptr;
+  vTaskDelete(nullptr);
+}
+
+esp_err_t start_dns() {
+  dns_running = true;
+  if (dns_task_handle) return ESP_OK;  // still running from before
+  dns_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (dns_socket < 0) return ESP_FAIL;
+  sockaddr_in addr = {};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(53);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  timeval timeout = {1, 0};
+  if (bind(dns_socket, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 ||
+      setsockopt(dns_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+      xTaskCreate(dns_task, "fy_dns", 4096, nullptr, 3, &dns_task_handle) != pdPASS) {
+    close(dns_socket);
+    dns_socket = -1;
+    dns_running = false;
+    return ESP_FAIL;
+  }
+  ESP_LOGW(TAG, "captive-portal test mode: answering every DNS name, redirecting other pages");
+  return ESP_OK;
+}
+
+void stop_dns() { dns_running = false; }  // the task exits within a second
+#endif  // CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+
 esp_err_t status_get(httpd_req_t *req) {
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+  if (redirect_if_needed(req)) return ESP_OK;
+#endif
   if (request_hook) request_hook();  // only page loads count as activity
   fy::dashboard::PageRow rows[kTypeCount];
   fy::dashboard::StatusPage p;
@@ -195,6 +295,7 @@ esp_err_t start_access_point() {
   if (!ap_netif) {
     ap_netif = esp_netif_create_default_wifi_ap();
     if (!ap_netif) return ESP_FAIL;
+    ESP_RETURN_ON_ERROR(fy_dashboard_portal_dhcp(ap_netif), TAG, "portal dhcp");
   }
   wifi_config_t cfg = {};
   const size_t ssid_len = strlen(ssid);
@@ -221,9 +322,16 @@ esp_err_t start_server() {
   config.stack_size = 6144;
   config.max_open_sockets = 3;
   config.lru_purge_enable = true;
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+  config.uri_match_fn = httpd_uri_match_wildcard;  // every path, for redirects
+#endif
   ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "httpd_start");
   httpd_uri_t root = {};
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+  root.uri = "/*";
+#else
   root.uri = "/";
+#endif
   root.method = HTTP_GET;
   root.handler = status_get;
   const esp_err_t err = httpd_register_uri_handler(server, &root);
@@ -262,7 +370,16 @@ void publish(bool active) {
 esp_err_t fy_dashboard_page_start(void) {
   xSemaphoreTake(page_lock(), portMAX_DELAY);
   esp_err_t err = ESP_OK;
-  if (page_users == 0) err = start_server();
+  if (page_users == 0) {
+    err = start_server();
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+    if (err == ESP_OK) err = start_dns();
+    if (err != ESP_OK && server) {
+      httpd_stop(server);
+      server = nullptr;
+    }
+#endif
+  }
   if (err == ESP_OK) page_users++;
   xSemaphoreGive(page_lock());
   return err;
@@ -273,8 +390,35 @@ void fy_dashboard_page_stop(void) {
   if (page_users > 0 && --page_users == 0 && server) {
     httpd_stop(server);
     server = nullptr;
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+    stop_dns();
+#endif
   }
   xSemaphoreGive(page_lock());
+}
+
+esp_err_t fy_dashboard_portal_dhcp(esp_netif_t *netif) {
+#if CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL
+  // Offer the device as gateway and DNS server so phones probe it for
+  // internet access and find the portal.
+  esp_netif_ip_info_t ip = {};
+  ESP_RETURN_ON_ERROR(esp_netif_get_ip_info(netif, &ip), TAG, "ip info");
+  uint8_t on = 1;
+  ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(netif, ESP_NETIF_OP_SET,
+                                             ESP_NETIF_ROUTER_SOLICITATION_ADDRESS, &on,
+                                             sizeof(on)),
+                      TAG, "router offer");
+  ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(netif, ESP_NETIF_OP_SET,
+                                             ESP_NETIF_DOMAIN_NAME_SERVER, &on, sizeof(on)),
+                      TAG, "dns offer");
+  esp_netif_dns_info_t dns = {};
+  dns.ip.type = ESP_IPADDR_TYPE_V4;
+  dns.ip.u_addr.ip4 = ip.ip;
+  return esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+#else
+  (void)netif;
+  return ESP_OK;
+#endif
 }
 
 esp_err_t fy_dashboard_start() {
