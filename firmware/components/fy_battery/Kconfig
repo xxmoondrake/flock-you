@@ -2,20 +2,21 @@ menu "Detector battery"
 
     config FY_BATTERY_FULL_MV
         int "Battery voltage shown as 100% (mV)"
-        default 4200
+        default 4270
         range 3500 4500
         help
-            Measured battery voltage that maps to 100%. Tune to the voltage a
-            fully charged battery reads on this board once it has rested off
-            the charger.
+            Measured battery voltage that maps to 100%. The default is what
+            a Heltec V4.3 read under normal load just after a full charge was
+            unplugged; it reads about 4300 mV while on the charger.
 
     config FY_BATTERY_EMPTY_MV
         int "Battery voltage shown as 0% (mV)"
-        default 3300
+        default 3200
         range 2800 3900
         help
-            Measured battery voltage that maps to 0%. Tune to the voltage at
-            which the board should be treated as nearly empty.
+            Measured battery voltage that maps to 0%. The default matches
+            the protection cutoff, so the percentage is the share of runtime
+            left before the board powers itself off.
 
     config FY_BATTERY_CUTOFF_MV
         int "Shut down below this battery voltage (mV)"

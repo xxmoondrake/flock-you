@@ -202,6 +202,7 @@ void on_sighting(const fy_detector_sighting &d) {
   }
 }
 
+#if CONFIG_FY_BATTERY_LOG
 void record_battery(uint32_t now) {
   fy_battery_status b;
   fy_battery_get_status(&b);
@@ -225,6 +226,7 @@ void record_battery(uint32_t now) {
     portEXIT_CRITICAL(&status_lock);
   }
 }
+#endif
 
 void erase_progress(size_t done, size_t total, void *) {
   portENTER_CRITICAL(&status_lock);
@@ -274,8 +276,10 @@ void log_status() {
 }
 
 void recorder_task(void *) {
+#if CONFIG_FY_BATTERY_LOG
   const uint32_t battery_interval_ms = CONFIG_FY_BATTERY_LOG_INTERVAL_S * 1000u;
   uint32_t last_battery = now_ms() - battery_interval_ms;  // first sample right away
+#endif
   uint32_t last_status = now_ms();
   for (;;) {
     Sighting s;
@@ -294,10 +298,12 @@ void recorder_task(void *) {
     }
     if (erase_requested.exchange(false)) erase_all();
 
+#if CONFIG_FY_BATTERY_LOG
     if (now - last_battery >= battery_interval_ms) {
       last_battery = now;
       record_battery(now);
     }
+#endif
     portENTER_CRITICAL(&status_lock);
     status.encounters_started = tracker->started();
     status.encounters_active = tracker->active();

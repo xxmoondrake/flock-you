@@ -10,11 +10,16 @@ struct Point {
   uint8_t percent;
 };
 
-// Typical single-cell Li-ion discharge under light load, descending.
+// Measured on a Heltec V4.3 with a 3000 mAh single cell (scanning, GPS, and
+// OLED active), combined from two discharge runs, descending. Voltages are as
+// the board's divider reads them, not at the cell terminals. The percentage
+// is the share of runtime left before the 3200 mV cutoff; a full charge
+// lasted about 20.5 hours.
 constexpr Point kCurve[] = {
-    {4200, 100}, {4150, 95}, {4110, 90}, {4080, 85}, {4020, 80}, {3980, 75}, {3950, 70},
-    {3910, 65},  {3870, 60}, {3850, 55}, {3840, 50}, {3820, 45}, {3800, 40}, {3790, 35},
-    {3770, 30},  {3750, 25}, {3730, 20}, {3710, 15}, {3690, 10}, {3610, 5},  {3300, 0},
+    {4270, 100}, {4204, 95}, {4158, 90}, {4096, 85}, {4034, 80}, {3996, 75}, {3970, 70},
+    {3939, 65},  {3892, 60}, {3826, 55}, {3782, 50}, {3750, 45}, {3721, 40}, {3699, 35},
+    {3680, 30},  {3648, 25}, {3612, 20}, {3572, 15}, {3518, 10}, {3471, 5},  {3451, 4},
+    {3408, 3},   {3350, 2},  {3278, 1},  {3200, 0},
 };
 constexpr int kPoints = sizeof(kCurve) / sizeof(kCurve[0]);
 

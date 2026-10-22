@@ -17,13 +17,23 @@ menu "Detector recording"
             An open encounter that has changed is rewritten at most this
             often, which bounds what an abrupt power cut can lose.
 
+    config FY_BATTERY_LOG
+        bool "Record battery samples"
+        default n
+        help
+            Stores periodic battery samples alongside the encounters on
+            boards that can measure a battery. Enable only to characterise
+            charge and discharge (for example a new battery); otherwise the
+            samples wear the flash and take space from encounter records.
+            The battery monitor, display, and protection work either way.
+
     config FY_BATTERY_LOG_INTERVAL_S
         int "Battery sample interval (s)"
+        depends on FY_BATTERY_LOG
         default 60
         range 10 3600
         help
-            Interval between stored battery samples on boards that can
-            measure a battery. Used to characterise charge and discharge.
+            Interval between stored battery samples.
 
     config FY_STORAGE_WARN_PERCENT
         int "Storage use that triggers an offload warning (%)"

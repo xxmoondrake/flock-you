@@ -13,13 +13,13 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 **Matching.** Upstream flock-you signatures, pinned at upstream commit `6704f01`. Each rule is **specific** or **possible** (broad manufacturer prefixes or generic identifiers); neither label proves what a device is. The console reports a match at most once per address per 5 s unless it strengthens, with fix state (`gps=current hdop=…` or `no_fix`) but no coordinates. A specific match flashes the LED three times.
 
-**Recording.** Every match, before rate limiting, is queued to the recorder, which groups an address's sightings into an encounter. An encounter keeps its strongest rule, count, RSSI range, and three sightings (first, last, strongest), each with time, RSSI, location, and fix state. It is written on open, while changing (rate-limited), and on close, so a power cut loses about a minute at most. Boards that measure a battery also log battery samples.
+**Recording.** Every match, before rate limiting, is queued to the recorder, which groups an address's sightings into an encounter. An encounter keeps its strongest rule, count, RSSI range, and three sightings (first, last, strongest), each with time, RSSI, location, and fix state. It is written on open, while changing (rate-limited), and on close, so a power cut loses about a minute at most. Boards that measure a battery can also log battery samples (`FY_BATTERY_LOG`, off by default).
 
 **Storage.** The 4 MB `obslog` partition (0x310000) is an append-only ring of 128-byte records with sequence numbers and CRCs. Each sector is erased just before reuse, trimming the oldest records; a record torn by power loss fails its CRC and is skipped. Firmware uploads leave the partition intact. A boot session counter in NVS distinguishes uptimes across boots.
 
 **GPS.** Reads RMC, GGA, GSA, GSV, and TXT from any talker. At boot the Heltec configures its L76K as Meshtastic does, without saving to the receiver: `$PCAS06,0` (version, logged as `receiver=`) and `$PCAS04,7` (GPS + BeiDou + GLONASS). Time and position validity are tracked separately; a position over 5 s old is stale and never shown as current, and dates before 2025 are treated as receiver placeholders.
 
-**Battery (Heltec).** Measured every 5 s through the divider on GPIO1 (connected by GPIO37 only while measuring), smoothed, and logged every 60 s. The percentage stretches a typical Li-ion curve between the empty and full voltages; tune both to the battery. Readings while charging overstate the charge. Protection: below the cutoff for 30 s, the board shows "LOW BATTERY" for 3 s, saves open encounters, and powers off. Below the start minimum it refuses to start, waking periodically without the display and starting once charging has raised the voltage.
+**Battery (Heltec).** Measured every 5 s through the divider on GPIO1 (connected by GPIO37 only while measuring), and smoothed; with `FY_BATTERY_LOG` enabled, a sample is also stored every 60 s to characterise a battery. The percentage follows a discharge curve measured on a Heltec V4.3 with a 3000 mAh cell under normal load (about 20.5 hours from a full charge to the cutoff) and estimates the share of runtime left; the empty and full voltages stretch it to another battery or divider. Readings while charging overstate the charge. Protection: below the cutoff for 30 s, the board shows "LOW BATTERY" for 3 s, saves open encounters, and powers off. Below the start minimum it refuses to start, waking periodically without the display and starting once charging has raised the voltage.
 
 **Heltec screens** (2 Hz):
 - **Home:** battery percentage and voltage, UTC or uptime, capture state, GPS state and coordinates, match counts, last match. A specific match inverts the title row for 10 s. Without a fix, the coordinates row shows `view N sig N ant OK|OPEN|SHORT|?` (satellites in view, satellites with signal, antenna report). A passive patch antenna can read `OPEN` and still work; satellites with signal is the number that matters. Past the storage warning threshold, `STORAGE N% OFFLOAD` replaces the first match row.
@@ -49,9 +49,10 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 | --- | --- | --- |
 | `FY_ENCOUNTER_ABSENCE_S` | 60 | Seconds of silence that close an encounter |
 | `FY_ENCOUNTER_CHECKPOINT_S` | 60 | Minimum seconds between rewrites of a changing encounter |
-| `FY_BATTERY_LOG_INTERVAL_S` | 60 | Battery sample interval (s) |
+| `FY_BATTERY_LOG` | off | Store battery samples (for characterising a battery) |
+| `FY_BATTERY_LOG_INTERVAL_S` | 60 | Battery sample interval (s), when logging |
 | `FY_STORAGE_WARN_PERCENT` | 90 | Storage use that triggers the offload warning |
-| `FY_BATTERY_EMPTY_MV`, `FY_BATTERY_FULL_MV` | 3300, 4200 | Voltages shown as 0% and 100% |
+| `FY_BATTERY_EMPTY_MV`, `FY_BATTERY_FULL_MV` | 3200, 4270 | Voltages shown as 0% and 100% |
 | `FY_BATTERY_CUTOFF_MV` | 3200 | Power off after 30 s below this |
 | `FY_BATTERY_BOOT_MIN_MV` | 3350 | Refuse to start below this |
 | `FY_BATTERY_RECHECK_S` | 600 | Wake interval while off for low battery |
@@ -73,7 +74,7 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 - Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing.
 - GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.
-- Battery thresholds calibrated from recorded charge and discharge data.
+- Battery cutoff and start thresholds revisited against the measured curve, and the divider checked with a multimeter.
 
 ## Reading stored records
 
@@ -125,7 +126,7 @@ The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds t
 | `src/idf_component.yml`, `dependencies.lock` | `espressif/esp_tinyusb` pinned to 2.4.0 (with `espressif/tinyusb` 0.21.0~2), fetched from the ESP Component Registry on first build | |
 | `components/fy_battery` | Voltage-to-percent estimate, measurement driver | Estimate |
 | `components/fy_store` | Record format, power-loss-tolerant ring log, encounter grouping | All |
-| `components/fy_recorder` | Writes encounters and battery samples to `obslog` | |
+| `components/fy_recorder` | Writes encounters (and optional battery samples) to `obslog` | |
 | `tools/read_obslog.py` | Decodes an `obslog` dump to CSV | |
 | `src/main.cpp` | Startup | |
 | `sdkconfig.defaults*` | Shared and per-board configuration | |

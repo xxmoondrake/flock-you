@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
 // Recorder: persists encounter records built from detector sightings, and
-// periodic battery samples, to the "obslog" flash partition, and keeps the
-// statistics shown on the device's screens.
+// periodic battery samples when CONFIG_FY_BATTERY_LOG is enabled, to the
+// "obslog" flash partition, and keeps the statistics shown on the device's
+// screens.
 
 #pragma once
 
