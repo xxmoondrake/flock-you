@@ -94,32 +94,67 @@ void test_power_off_from_anywhere() {
   TEST_ASSERT_EQUAL(Action::PowerOff, handle_press(s, Press::PowerOff, 0));
 }
 
-void test_device_menu_selects_modes_and_dashboard() {
-  size_t n = 0;
-  menu_items(Overlay::DeviceMenu, &n);
-  TEST_ASSERT_EQUAL_UINT(4, n);
-
-  const Action expected[] = {Action::SelectScanning, Action::SelectStandby,
-                             Action::ToggleDashboard, Action::None};
-  for (size_t item = 0; item < n; item++) {
-    UiState s;
-    s.screen = Screen::Device;
-    handle_press(s, Press::Long, 0);
-    TEST_ASSERT_EQUAL(Overlay::DeviceMenu, s.overlay);
-    TEST_ASSERT_EQUAL_UINT8(0, s.item);
-    for (size_t i = 0; i < item; i++) handle_press(s, Press::Short, 0);
-    TEST_ASSERT_EQUAL(expected[item], handle_press(s, Press::Long, 0));
-    TEST_ASSERT_EQUAL(Overlay::None, s.overlay);  // every choice closes the menu
-    TEST_ASSERT_EQUAL(Screen::Device, s.screen);
-  }
+// Opens the Device menu and moves to `item`.
+UiState device_menu_at(size_t item, bool dashboard_running = false) {
+  UiState s;
+  s.screen = Screen::Device;
+  s.dashboard_running = dashboard_running;
+  handle_press(s, Press::Long, 0);
+  for (size_t i = 0; i < item; i++) handle_press(s, Press::Short, 0);
+  return s;
 }
 
-void test_dashboard_is_separate_from_mode_items() {
+void test_device_menu_selects_modes() {
   size_t n = 0;
   const char *const *items = menu_items(Overlay::DeviceMenu, &n);
+  TEST_ASSERT_EQUAL_UINT(4, n);
   TEST_ASSERT_EQUAL_STRING("Scanning", items[0]);
   TEST_ASSERT_EQUAL_STRING("Standby", items[1]);
-  TEST_ASSERT_EQUAL_STRING("WiFi dashboard", items[2]);
+  TEST_ASSERT_EQUAL_STRING("Dashboard", items[2]);
+
+  UiState s = device_menu_at(0);
+  TEST_ASSERT_EQUAL(Action::SelectScanning, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::None, s.overlay);
+  s = device_menu_at(1);
+  TEST_ASSERT_EQUAL(Action::SelectStandby, handle_press(s, Press::Long, 0));
+  s = device_menu_at(3);  // Back
+  TEST_ASSERT_EQUAL(Action::None, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::None, s.overlay);
+}
+
+void test_start_dashboard_offers_usb_and_wifi() {
+  size_t n = 0;
+  const char *const *items = menu_items(Overlay::DashboardMenu, &n);
+  TEST_ASSERT_EQUAL_UINT(3, n);
+  TEST_ASSERT_EQUAL_STRING("USB dashboard", items[0]);
+  TEST_ASSERT_EQUAL_STRING("WiFi dashboard", items[1]);
+
+  UiState s = device_menu_at(2);
+  TEST_ASSERT_EQUAL(Action::None, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::DashboardMenu, s.overlay);
+  TEST_ASSERT_EQUAL_UINT8(0, s.item);
+  TEST_ASSERT_EQUAL(Action::StartUsbDashboard, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::None, s.overlay);
+
+  s = device_menu_at(2);
+  handle_press(s, Press::Long, 0);
+  handle_press(s, Press::Short, 0);
+  TEST_ASSERT_EQUAL(Action::StartWifiDashboard, handle_press(s, Press::Long, 0));
+
+  // Back returns to the Device menu on its dashboard item.
+  s = device_menu_at(2);
+  handle_press(s, Press::Long, 0);
+  handle_press(s, Press::Short, 0);
+  handle_press(s, Press::Short, 0);
+  TEST_ASSERT_EQUAL(Action::None, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::DeviceMenu, s.overlay);
+  TEST_ASSERT_EQUAL_UINT8(2, s.item);
+}
+
+void test_running_dashboard_is_stopped_directly() {
+  UiState s = device_menu_at(2, true);
+  TEST_ASSERT_EQUAL(Action::StopDashboard, handle_press(s, Press::Long, 0));
+  TEST_ASSERT_EQUAL(Overlay::None, s.overlay);
 }
 
 int main(int, char **) {
@@ -131,7 +166,8 @@ int main(int, char **) {
   RUN_TEST(test_menu_items_wrap_and_back_closes);
   RUN_TEST(test_erase_requires_moving_off_cancel);
   RUN_TEST(test_power_off_from_anywhere);
-  RUN_TEST(test_device_menu_selects_modes_and_dashboard);
-  RUN_TEST(test_dashboard_is_separate_from_mode_items);
+  RUN_TEST(test_device_menu_selects_modes);
+  RUN_TEST(test_start_dashboard_offers_usb_and_wifi);
+  RUN_TEST(test_running_dashboard_is_stopped_directly);
   return UNITY_END();
 }

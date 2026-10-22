@@ -22,6 +22,7 @@
 #include "fy_signatures.h"
 #include "fy_ui_controller.h"
 #include "fy_ui_layout.h"
+#include "fy_usb.h"
 
 namespace {
 
@@ -87,16 +88,19 @@ void gather(UiModel &m, bool power_off_armed) {
   fy_device_status dev;
   fy_device_get_status(&dev);
   m.standby = dev.selected == fy::device::Mode::Standby;
-  m.dashboard_active = dev.dashboard;
+  m.dashboard_active = dev.dashboard != fy::device::Dashboard::Off;
+  m.dashboard_usb = dev.dashboard == fy::device::Dashboard::Usb;
   m.dashboard_failed = dev.dashboard_failed;
   m.dashboard_left_ms = dev.dashboard_remaining_ms;
-  if (dev.dashboard) {
+  if (dev.dashboard == fy::device::Dashboard::Wifi) {
     fy_dashboard_status dash;
     fy_dashboard_get_status(&dash);
     snprintf(m.dashboard_ssid, sizeof(m.dashboard_ssid), "%s", dash.ssid);
     snprintf(m.dashboard_passkey, sizeof(m.dashboard_passkey), "%s", dash.passkey);
     snprintf(m.dashboard_address, sizeof(m.dashboard_address), "%s", dash.address);
     m.dashboard_clients = dash.clients;
+  } else if (dev.dashboard == fy::device::Dashboard::Usb) {
+    snprintf(m.dashboard_address, sizeof(m.dashboard_address), "%s", FY_USB_ADDRESS);
   }
   m.reported = d.reported;
   m.reported_specific = d.reported_specific;
@@ -206,6 +210,9 @@ void ui_task(void *) {
         const fy::ui::Press press = fy::ui::classify_press(now - pressed_since, now);
         armed = false;
         fy_device_note_activity();  // keeps a dashboard session open
+        fy_device_status now_dev;
+        fy_device_get_status(&now_dev);
+        state.dashboard_running = now_dev.dashboard != fy::device::Dashboard::Off;
         const Action action = fy::ui::handle_press(state, press, now);
         if (action == Action::PowerOff) power_off();
         if (action == Action::SelectScanning || action == Action::SelectStandby) {
@@ -213,17 +220,22 @@ void ui_task(void *) {
           fy_device_select_mode(standby ? fy::device::Mode::Standby : fy::device::Mode::Scanning);
           fy_device_status dev;
           fy_device_get_status(&dev);
-          const char *notice = dev.dashboard ? "After dashboard ends"
+          const char *notice = dev.dashboard == fy::device::Dashboard::Wifi ? "After dashboard ends"
                                : standby     ? "Standby: not scanning"
                                              : "Scanning";
           fy::ui::show_message(state, notice, now);
         }
-        if (action == Action::ToggleDashboard) {
-          fy_device_status dev;
-          fy_device_get_status(&dev);
-          fy_device_set_dashboard(!dev.dashboard);
-          fy::ui::show_message(state, dev.dashboard ? "Dashboard stopping" : "Dashboard starting",
-                               now);
+        if (action == Action::StopDashboard) {
+          fy_device_stop_dashboard();
+          fy::ui::show_message(state, "Dashboard stopping", now);
+        }
+        if (action == Action::StartUsbDashboard) {
+          fy_device_start_dashboard(fy::device::Dashboard::Usb);
+          fy::ui::show_message(state, "USB dashboard on", now);
+        }
+        if (action == Action::StartWifiDashboard) {
+          fy_device_start_dashboard(fy::device::Dashboard::Wifi);
+          fy::ui::show_message(state, "WiFi dashboard on", now);
         }
         if (action == Action::SaveOpen) {
           fy_recorder_status r;

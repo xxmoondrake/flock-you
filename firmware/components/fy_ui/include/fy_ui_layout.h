@@ -30,7 +30,8 @@ struct UiModel {
 
   // Device management: the selected mode and the Wi-Fi dashboard session.
   bool standby;  // standby selected (not scanning)
-  bool dashboard_active;
+  bool dashboard_active;  // either dashboard
+  bool dashboard_usb;     // the USB dashboard (detection keeps running)
   bool dashboard_failed;  // the last start attempt failed
   uint32_t dashboard_left_ms;
   char dashboard_ssid[33];

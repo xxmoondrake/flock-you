@@ -10,6 +10,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -40,6 +41,21 @@ static void init_nvs() {
     err = nvs_flash_init();
   }
   ESP_ERROR_CHECK(err);
+}
+
+static const char *reset_reason_name(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep wake";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_USB: return "USB";
+    default: return "other";
+  }
 }
 
 static void optional(const char *what, esp_err_t err) {
@@ -83,7 +99,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
   fy_board_init();
-  ESP_LOGI(TAG, "board=%s", fy_board_name());
+  ESP_LOGI(TAG, "board=%s reset=%s", fy_board_name(), reset_reason_name(esp_reset_reason()));
   optional("status LED", fy_status_led_start());  // solid until scanning starts
 
   // GPS, battery measurement, storage, and the display are optional per
@@ -94,9 +110,11 @@ extern "C" void app_main(void) {
   fy_battery_set_critical_handler(on_battery_critical);
   optional("recorder", fy_recorder_start());
   ESP_ERROR_CHECK(fy_detector_start());
-  // Every boot starts scanning with the Wi-Fi dashboard off.
+  // Every boot starts scanning with no dashboard session.
   optional("device modes", fy_device_start());
-  // On the XIAO the console moves to the USB serial port from here on.
+#if CONFIG_FY_USB_DASHBOARD_AT_BOOT
+  // The console moves to the USB serial port from here on.
   optional("USB dashboard", fy_usb_start());
+#endif
   optional("display", fy_ui_start());
 }

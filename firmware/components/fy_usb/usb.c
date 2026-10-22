@@ -10,6 +10,7 @@
 #if CONFIG_FY_USB_DASHBOARD
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +28,7 @@
 #include "tinyusb_console.h"
 #include "tinyusb_default_config.h"
 #include "tinyusb_net.h"
+#include "vfs_tinyusb.h"
 
 #include "fy_dashboard_page.h"
 
@@ -113,7 +115,7 @@ static esp_err_t start_netif(const uint8_t device_mac[6])
     ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(s_netif, ESP_NETIF_OP_SET,
                                                ESP_NETIF_DOMAIN_NAME_SERVER, &off, sizeof(off)),
                         TAG, "no dns");
-    // The captive-portal test build offers both after all.
+    // The captive portal (the default) offers both after all.
     ESP_RETURN_ON_ERROR(fy_dashboard_portal_dhcp(s_netif), TAG, "portal dhcp");
     esp_netif_action_start(s_netif, NULL, 0, NULL);
     esp_netif_action_connected(s_netif, NULL, 0, NULL);
@@ -183,12 +185,48 @@ esp_err_t fy_usb_start(void)
     ESP_RETURN_ON_ERROR(start_netif(device_mac), TAG, "netif");
     ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "status page");
 
-    ESP_LOGI(TAG, "USB console and network up; status page http://192.168.7.1/");
+    ESP_LOGI(TAG, "USB console and network up; status page http://" FY_USB_ADDRESS "/");
     return ESP_OK;
+}
+
+// ---- Stop -----------------------------------------------------------------------------
+
+// tinyusb_console_deinit() reopens the standard streams on /dev/uart/<n>,
+// which does not exist when USB Serial/JTAG is the primary console: the
+// streams stay on the CDC port, and the next log after the driver goes away
+// crashes. Reopen them on /dev/console, where startup opened them.
+static void restore_console(void)
+{
+    freopen("/dev/console", "r", stdin);
+    freopen("/dev/console", "w", stdout);
+    freopen("/dev/console", "w", stderr);
+    esp_vfs_tusb_cdc_unregister(NULL);
+}
+
+void fy_usb_stop(void)
+{
+    esp_netif_t *netif = s_netif;
+    if (!netif) return;
+    ESP_LOGI(TAG, "stopping USB dashboard");
+    fy_dashboard_page_stop();
+    // Received frames are dropped from here on, and removing the interface
+    // stops lwIP transmitting before the USB stack goes away.
+    s_netif = NULL;
+    esp_netif_action_stop(netif, NULL, 0, NULL);
+    esp_netif_destroy(netif);
+    restore_console();  // stdout back to USB Serial/JTAG
+    tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
+    tinyusb_net_deinit();
+    tinyusb_driver_uninstall();
+    usb_serial_jtag_ll_phy_enable_external(false);
+    s_touch_baud = false;
+    ESP_LOGI(TAG, "USB dashboard stopped; console back on USB Serial/JTAG");
 }
 
 #else  // CONFIG_FY_USB_DASHBOARD
 
 esp_err_t fy_usb_start(void) { return ESP_ERR_NOT_SUPPORTED; }
+
+void fy_usb_stop(void) {}
 
 #endif  // CONFIG_FY_USB_DASHBOARD

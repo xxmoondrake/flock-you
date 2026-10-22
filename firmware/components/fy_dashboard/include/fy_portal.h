@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Captive-portal test option (CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL): the DNS
+// Captive portal (CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL, the default): the DNS
 // answers and HTTP routing that make phones open the status page in their
 // "sign in to network" window. Pure C++ with no ESP-IDF dependencies so it can
 // be tested on a host computer.

@@ -261,7 +261,7 @@ esp_err_t start_dns() {
     dns_running = false;
     return ESP_FAIL;
   }
-  ESP_LOGW(TAG, "captive-portal test mode: answering every DNS name, redirecting other pages");
+  ESP_LOGI(TAG, "captive portal: answering every DNS name, redirecting other pages");
   return ESP_OK;
 }
 
@@ -422,6 +422,9 @@ esp_err_t fy_dashboard_portal_dhcp(esp_netif_t *netif) {
 }
 
 esp_err_t fy_dashboard_start() {
+#if !CONFIG_FY_WIFI_DASHBOARD
+  return ESP_ERR_NOT_SUPPORTED;
+#endif
   if (access_point_on) return ESP_OK;
   ESP_RETURN_ON_ERROR(load_credentials(), TAG, "credentials");
   esp_err_t err = start_access_point();

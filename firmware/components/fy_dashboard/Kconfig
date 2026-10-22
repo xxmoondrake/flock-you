@@ -1,5 +1,15 @@
 menu "Detector Wi-Fi dashboard"
 
+    config FY_WIFI_DASHBOARD
+        bool "Offer the Wi-Fi dashboard"
+        default y if FY_BOARD_HELTEC_V43
+        default n
+        help
+            A WPA3 access point serving the status page, started from the
+            Device menu (or, on boards without a display, by five quick
+            button presses). Detection is paused while it runs. The XIAO
+            uses its USB dashboard instead.
+
     config FY_DASHBOARD_SSID_PREFIX
         string "Access point name prefix"
         default "FY-"
@@ -34,17 +44,18 @@ menu "Detector Wi-Fi dashboard"
             tab does not keep the session alive.
 
     config FY_DASHBOARD_CAPTIVE_PORTAL
-        bool "Test only: present the dashboards as a captive portal"
-        default n
+        bool "Present the dashboards as a captive portal"
+        default y
         help
-            For evaluating phone behaviour; the design plan does not adopt a
-            captive portal. The dashboard networks' DHCP servers also offer
-            the device as gateway and DNS server, a DNS server answers every
-            name with the device's address, and the HTTP server redirects
-            everything except the status page there, including operating
-            systems' connectivity checks. Phones then open the page in their
-            "sign in to network" window with mobile data still on. On a PC
-            the USB link also carries a default route (normally outranked by
-            faster links). Built by the *_portal environments.
+            Phones open the status page in their "sign in to network"
+            window, without turning off mobile data. The dashboard networks'
+            DHCP servers also offer the device as gateway and DNS server, a
+            DNS server answers every name with the device's address, and the
+            HTTP server redirects everything except the status page there,
+            including operating systems' connectivity checks, which do not
+            count as dashboard activity. A PC on the USB link therefore also
+            gets a default route and DNS server there (normally outranked by
+            its other connections). Off: the networks offer an address only,
+            and Android reaches the page only with mobile data and Wi-Fi off.
 
 endmenu

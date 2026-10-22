@@ -9,12 +9,15 @@ namespace {
 
 constexpr const char *kDataMenu[] = {"Save open encounters", "Erase all records", "Back"};
 constexpr const char *kEraseConfirm[] = {"Cancel", "Erase everything"};
-// The renderer marks the active mode and labels the dashboard item by state.
-constexpr const char *kDeviceMenu[] = {"Scanning", "Standby", "WiFi dashboard", "Back"};
+// The renderer marks the selected mode and names the dashboard item "Start
+// dashboard" or "Stop dashboard" by state.
+constexpr const char *kDeviceMenu[] = {"Scanning", "Standby", "Dashboard", "Back"};
+constexpr const char *kDashboardMenu[] = {"USB dashboard", "WiFi dashboard", "Back"};
 
 enum DataItem : uint8_t { kSaveOpen = 0, kErase = 1, kBack = 2 };
 enum EraseItem : uint8_t { kCancel = 0, kConfirm = 1 };
 enum DeviceItem : uint8_t { kScanning = 0, kStandby = 1, kDashboard = 2, kDeviceBack = 3 };
+enum DashboardItem : uint8_t { kUsb = 0, kWifi = 1, kDashboardBack = 2 };
 
 }  // namespace
 
@@ -34,6 +37,9 @@ const char *const *menu_items(Overlay overlay, size_t *count) {
     case Overlay::DeviceMenu:
       *count = sizeof(kDeviceMenu) / sizeof(kDeviceMenu[0]);
       return kDeviceMenu;
+    case Overlay::DashboardMenu:
+      *count = sizeof(kDashboardMenu) / sizeof(kDashboardMenu[0]);
+      return kDashboardMenu;
     default:
       *count = 0;
       return nullptr;
@@ -103,13 +109,31 @@ Action handle_press(UiState &state, Press press, uint32_t now_ms) {
         state.item = static_cast<uint8_t>((state.item + 1) % count);
         return Action::None;
       }
+      if (state.item == kDashboard && !state.dashboard_running) {
+        state.overlay = Overlay::DashboardMenu;  // choose USB or Wi-Fi
+        state.item = 0;
+        return Action::None;
+      }
       state.overlay = Overlay::None;
       switch (state.item) {
         case kScanning: return Action::SelectScanning;
         case kStandby: return Action::SelectStandby;
-        case kDashboard: return Action::ToggleDashboard;
+        case kDashboard: return Action::StopDashboard;
         default: return Action::None;
       }
+
+    case Overlay::DashboardMenu:
+      if (press == Press::Short) {
+        state.item = static_cast<uint8_t>((state.item + 1) % count);
+        return Action::None;
+      }
+      if (state.item == kDashboardBack) {
+        state.overlay = Overlay::DeviceMenu;  // back where the submenu opened
+        state.item = kDashboard;
+        return Action::None;
+      }
+      state.overlay = Overlay::None;
+      return state.item == kUsb ? Action::StartUsbDashboard : Action::StartWifiDashboard;
   }
   return Action::None;
 }

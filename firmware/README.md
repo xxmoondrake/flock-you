@@ -4,8 +4,8 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 | Environment | Board | Status |
 | --- | --- | --- |
-| `xiao_esp32s3` | Seeed Studio XIAO ESP32S3 | Runs. USB dashboard and USB console over its native USB port; status LED on GPIO21; no display. GPS disabled until a breakout's wiring and supply are confirmed. |
-| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. Four OLED screens with button navigation, scanning and standby modes, a minimal Wi-Fi dashboard, battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
+| `xiao_esp32s3` | Seeed Studio XIAO ESP32S3 | Runs. USB dashboard (with captive portal) and USB console over its native USB port; no Wi-Fi dashboard; status LED on GPIO21; no display. GPS disabled until a breakout's wiring and supply are confirmed. |
+| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. Four OLED screens with button navigation, scanning and standby modes, a Wi-Fi dashboard and an optional USB dashboard (both with captive portal), battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
 
 ## Behavior
 
@@ -25,7 +25,7 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 - **Home:** battery percentage and voltage, UTC or uptime, capture state, GPS state and coordinates, match counts, last match. A specific match inverts the title row for 10 s. Without a fix, the coordinates row shows `view N sig N ant OK|OPEN|SHORT|?` (satellites in view, satellites with signal, antenna report). A passive patch antenna can read `OPEN` and still work; satellites with signal is the number that matters. Past the storage warning threshold, `STORAGE N% OFFLOAD` replaces the first match row.
 - **Detections:** distinct devices per device type, this session and in stored history; possible types are marked `?`.
 - **Data:** record counts, storage use (highlighted past the warning threshold), oldest record date. Menu: save open encounters, or erase all records behind a confirmation that starts on "Cancel".
-- **Device:** the selected mode, what is detecting, and the Wi-Fi dashboard. Menu: Scanning, Standby, and a separate Start/Stop WiFi dashboard item. While the dashboard runs, the screen shows the time left, the SSID, the passkey (only while it is still the generated one), the page address, and connected clients.
+- **Device:** the selected mode, what is detecting, and any dashboard. Menu: Scanning, Standby, and **Start dashboard**, a submenu offering **USB dashboard** or **WiFi dashboard**; while one runs the item reads **Stop dashboard**. During a Wi-Fi session the screen shows the time left, the SSID, the passkey (only while it is still the generated one), the page address, and connected clients; during a USB session, the page address.
 
 **Heltec button** (PRG, as in Meshtastic): a short press moves to the next screen or menu item; a hold of about 0.5 s opens the menu or selects; a hold of about 4 s, then release, saves and powers off (only after 30 s of uptime). A press wakes the board.
 
@@ -33,11 +33,11 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 **Wi-Fi dashboard (minimal).** Starting it from the Device menu pauses Wi-Fi and BLE detection and turns the Wi-Fi radio into a WPA3-Personal access point (SAE only, protected management frames required, at most 2 clients) serving a read-only status page at `http://192.168.4.1/`: battery, GPS fix state, match counts, detections by type, and storage. The page has no location, scripts, or automatic refresh. The SSID and a temporary passkey are generated per device on first use from the hardware RNG and kept in NVS; the passkey is never logged. A session ends when stopped from the menu, after 10 minutes without a button press or page load, or on reboot, and the selected mode then resumes. Ending a session also releases the access point's network interface and DHCP server; only lwIP's core thread stays, since ESP-IDF cannot shut it down once started. Changing the passkey, HTTPS, login, and export belong to the planned full dashboard. On recent Android versions the browser asks once for the "Nearby devices" permission before it can open a local address such as the status page.
 
-On boards without a display (the XIAO), five quick presses of the BOOT button (each under 0.5 s, under 1 s apart) start or stop the Wi-Fi dashboard instead of a menu item, and the access point uses a shared passkey set at build time (`FY_DASHBOARD_PASSKEY`, `fy-dashboard` in the XIAO's defaults) because there is no screen to show a generated one. Anyone who knows a shared passkey can join while that device's dashboard is on. The XIAO's Wi-Fi dashboard is on hold in favour of the USB dashboard; an access point on the XIAO also needs a 2.4 GHz antenna on its antenna connector.
+The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB. A board without a display that enables it starts and stops it with five quick presses of its button (each under 0.5 s, under 1 s apart) and uses a shared passkey set at build time (`FY_DASHBOARD_PASSKEY`), since there is no screen to show a generated one; anyone who knows a shared passkey can join while the dashboard is on.
 
-**USB dashboard (XIAO).** The native USB port is a composite device: a CDC-ACM serial port that carries the console, and a CDC-NCM network adapter (Windows 11, Linux, and Android include a driver). The XIAO is `192.168.7.1`; its DHCP server gives the host an address but no gateway or DNS, so the host keeps its own internet connection. The same read-only status page is served at `http://192.168.7.1/` whenever the cable is connected, and detection keeps running. Early boot logs still appear on USB Serial/JTAG before the USB device starts; panic output after that is not visible over USB. On Android the browser uses the phone's default network, so the page loads only while mobile data and Wi-Fi are off (for example in airplane mode); Windows reaches it with other networks up.
+**USB dashboard.** The native USB port becomes a composite device: a CDC-ACM serial port that carries the console, and a CDC-NCM network adapter (Windows 11, Linux, Android, and iOS include a driver). The device is `192.168.7.1`, and the same read-only status page is served at `http://192.168.7.1/`. Detection keeps running, and there is no inactivity timeout. The XIAO runs it from boot; the Heltec starts it from the Device menu, and its USB-C port returns to the USB Serial/JTAG console when it stops. Boot logs before the switch go to USB Serial/JTAG; panic output after it is not visible over USB.
 
-**Captive-portal test builds.** The `xiao_esp32s3_portal` and `heltec_v43_portal` environments enable `FY_DASHBOARD_CAPTIVE_PORTAL` to evaluate whether phones open the page in their "sign in to network" window with mobile data still on. The dashboard networks then offer the device as gateway and DNS server, a DNS server answers every name with the device's address, and everything except the status page redirects to it, including the connectivity checks Android, iOS, and Windows make. Those automatic checks do not count as activity for the Wi-Fi session timeout. The design does not adopt a captive portal; these builds exist only to test one.
+**Captive portal (default, `FY_DASHBOARD_CAPTIVE_PORTAL`).** Both dashboard networks offer the device as gateway and DNS server, a DNS server answers every name with the device's address, and everything except the status page redirects to it, including the connectivity checks Android, iOS, and Windows make (which do not count as Wi-Fi session activity). Android then opens the page in its "sign in to network" window with mobile data on; iOS reaches it in the browser over USB, and through the portal over Wi-Fi. A PC on the USB link also gets a default route and DNS server there, normally outranked by its other connections; turn the option off for development use if that matters.
 
 **Status LED.** Solid while booting, one short blink every 3 s while scanning, one every 10 s in standby, and a double blink every 3 s while the Wi-Fi dashboard runs. Default on the XIAO; the Heltec uses its LED only for match flashes.
 
@@ -61,16 +61,16 @@ On boards without a display (the XIAO), five quick presses of the BOOT button (e
 | `FY_DASHBOARD_SSID_PREFIX` | `FY-` | Access point name prefix; four random characters follow |
 | `FY_DASHBOARD_CHANNEL` | 6 | Access point channel |
 | `FY_DASHBOARD_IDLE_S` | 600 | End a dashboard session after this long without use |
-| `FY_DASHBOARD_PASSKEY` | empty; `fy-dashboard` on the XIAO | Shared Wi-Fi passkey for boards without a display; empty generates one per device |
-| `FY_USB_DASHBOARD` | on when TinyUSB NCM and CDC are enabled (XIAO) | USB console and USB network status page |
-| `FY_DASHBOARD_CAPTIVE_PORTAL` | off | Test only: present the dashboards as a captive portal (see below) |
+| `FY_DASHBOARD_PASSKEY` | empty | Shared Wi-Fi passkey for boards without a display; empty generates one per device |
+| `FY_USB_DASHBOARD` | on (both boards enable TinyUSB NCM and CDC) | USB console and USB network status page |
+| `FY_USB_DASHBOARD_AT_BOOT` | XIAO only | Start the USB dashboard at boot instead of from the Device menu |
+| `FY_WIFI_DASHBOARD` | Heltec only | Offer the Wi-Fi dashboard |
+| `FY_DASHBOARD_CAPTIVE_PORTAL` | on | Present the dashboards as a captive portal |
 
 ## Planned
 
 - Signature review against the device families in datafx/alpr_detector, taking identifiers only, each checked against a primary source (IEEE or Bluetooth SIG registry, or field captures).
 - Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing.
-- Phone testing of the USB dashboard (Android and USB-C iPhone).
-- The Wi-Fi dashboard on the XIAO, which needs a 2.4 GHz antenna.
 - GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.
 - Battery thresholds calibrated from recorded charge and discharge data.
@@ -133,7 +133,7 @@ The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds t
 
 ## Build and flash
 
-Requires PlatformIO Core; the pinned platform downloads ESP-IDF 6.0.1 and its toolchain on first build. The repository path must not contain spaces: ESP-IDF's `-fmacro-prefix-map` argument breaks, and directory junctions don't help because the path is resolved.
+Requires PlatformIO Core; the pinned platform downloads ESP-IDF 6.0.1 and its toolchain on first build. The repository path must not contain spaces: ESP-IDF's `-fmacro-prefix-map` argument breaks, and directory junctions don't help because the path is resolved. Each environment's resolved configuration is kept in a generated `sdkconfig.<env>`, which wins over `sdkconfig.defaults*` and Kconfig defaults; after changing either, delete that file (and `.pio/build/<env>/CMakeCache.txt`) so it is regenerated.
 
 ```bash
 pio run -e xiao_esp32s3                    # or heltec_v43
@@ -143,7 +143,7 @@ pio test -e native                         # needs a host C++ compiler on PATH (
 
 `heltec_v43_debug_nmea` echoes every raw NMEA sentence, including positions; flash the normal environment afterwards.
 
-Flashing the XIAO once it runs this firmware: its serial port is the USB console (a different COM port than the bootloader's). `pio run -e xiao_esp32s3 -t upload --upload-port <console port>` opens it at 1200 baud, which reboots the XIAO into the serial bootloader; PlatformIO then flashes through the bootloader's port. If that fails, hold BOOT, tap RESET, release BOOT, and flash to the port that appears.
+Flashing while a USB dashboard runs (always on the XIAO): the board's serial port is then the USB console, a different port from the bootloader's. `pio run -e <env> -t upload --upload-port <console port>` opens it at 1200 baud, which reboots the board into the serial bootloader; PlatformIO then flashes through the bootloader's port. If that fails, hold BOOT (PRG on the Heltec), tap RESET (RST), release, and flash to the port that appears.
 
 Before flashing:
 - Flashing replaces the board's existing firmware. Back up first, and restore by writing the backup at offset 0:

@@ -19,7 +19,7 @@ constexpr uint32_t kPowerOffHoldMs = 4000;
 constexpr uint32_t kPowerOffMinUptimeMs = 30000;
 
 enum class Screen : uint8_t { Home = 0, Detections, Data, Device, Count };
-enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm, DeviceMenu };
+enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm, DeviceMenu, DashboardMenu };
 enum class Press : uint8_t { Short, Long, PowerOff };
 enum class Action : uint8_t {
   None,
@@ -28,13 +28,18 @@ enum class Action : uint8_t {
   PowerOff,
   SelectScanning,
   SelectStandby,
-  ToggleDashboard,  // start the Wi-Fi dashboard if it is off, stop it if on
+  StartUsbDashboard,
+  StartWifiDashboard,
+  StopDashboard,
 };
 
 struct UiState {
   Screen screen = Screen::Home;
   Overlay overlay = Overlay::None;
   uint8_t item = 0;  // highlighted menu item
+  // Set by the caller before each press: the Device menu's dashboard item
+  // stops a running dashboard instead of offering to start one.
+  bool dashboard_running = false;
   char message[22] = {};  // transient notice, shown until message_until_ms
   uint32_t message_until_ms = 0;
 };

@@ -14,17 +14,18 @@ void tearDown() {}
 
 constexpr uint32_t kIdle = 600000;  // 10 minutes
 
-void assert_outputs(const State &s, bool wifi, bool ble, bool ap) {
+void assert_outputs(const State &s, bool wifi, bool ble, bool ap, bool usb = false) {
   const Outputs o = outputs(s);
   TEST_ASSERT_EQUAL(wifi, o.wifi_capture);
   TEST_ASSERT_EQUAL(ble, o.ble_scan);
   TEST_ASSERT_EQUAL(ap, o.access_point);
+  TEST_ASSERT_EQUAL(usb, o.usb_dashboard);
 }
 
 void test_boot_state_is_scanning() {
   State s;
   TEST_ASSERT_EQUAL(Mode::Scanning, s.selected);
-  TEST_ASSERT_FALSE(s.dashboard);
+  TEST_ASSERT_EQUAL(Dashboard::Off, s.dashboard);
   assert_outputs(s, true, true, false);
 }
 
@@ -36,33 +37,50 @@ void test_standby_stops_all_detection() {
   assert_outputs(s, true, true, false);
 }
 
-void test_dashboard_pauses_detection_and_restores_mode() {
+void test_wifi_dashboard_pauses_detection_and_restores_mode() {
   State s;
-  start_dashboard(s, 1000);
+  start_dashboard(s, Dashboard::Wifi, 1000);
   assert_outputs(s, false, false, true);
   stop_dashboard(s);
   assert_outputs(s, true, true, false);
 
   select_mode(s, Mode::Standby);
-  start_dashboard(s, 2000);
+  start_dashboard(s, Dashboard::Wifi, 2000);
   assert_outputs(s, false, false, true);
   stop_dashboard(s);
   assert_outputs(s, false, false, false);  // back to standby, not scanning
 }
 
-void test_selection_during_session_applies_after() {
+void test_selection_during_wifi_session_applies_after() {
   State s;
-  start_dashboard(s, 0);
+  start_dashboard(s, Dashboard::Wifi, 0);
   select_mode(s, Mode::Standby);
   assert_outputs(s, false, false, true);  // still the dashboard
   stop_dashboard(s);
   assert_outputs(s, false, false, false);
 }
 
-void test_session_expires_after_inactivity() {
+void test_usb_dashboard_keeps_detection_in_selected_mode() {
+  State s;
+  start_dashboard(s, Dashboard::Usb, 0);
+  assert_outputs(s, true, true, false, true);
+  select_mode(s, Mode::Standby);  // applies at once: USB does not use the radio
+  assert_outputs(s, false, false, false, true);
+  stop_dashboard(s);
+  assert_outputs(s, false, false, false, false);
+}
+
+void test_off_is_not_a_session() {
+  State s;
+  start_dashboard(s, Dashboard::Off, 0);
+  TEST_ASSERT_EQUAL(Dashboard::Off, s.dashboard);
+  assert_outputs(s, true, true, false);
+}
+
+void test_wifi_session_expires_after_inactivity() {
   State s;
   TEST_ASSERT_EQUAL_UINT32(0, dashboard_remaining_ms(s, 5000, kIdle));  // no session
-  start_dashboard(s, 1000);
+  start_dashboard(s, Dashboard::Wifi, 1000);
   TEST_ASSERT_EQUAL_UINT32(kIdle, dashboard_remaining_ms(s, 1000, kIdle));
   TEST_ASSERT_EQUAL_UINT32(kIdle - 60000, dashboard_remaining_ms(s, 61000, kIdle));
   TEST_ASSERT_EQUAL_UINT32(0, dashboard_remaining_ms(s, 1000 + kIdle, kIdle));
@@ -73,6 +91,15 @@ void test_session_expires_after_inactivity() {
   TEST_ASSERT_TRUE(dashboard_remaining_ms(s, 1000 + kIdle, kIdle) > 0);
 }
 
+void test_usb_session_never_times_out() {
+  State s;
+  start_dashboard(s, Dashboard::Usb, 1000);
+  TEST_ASSERT_EQUAL_UINT32(0, dashboard_remaining_ms(s, 1000 + 10 * kIdle, kIdle));
+  TEST_ASSERT_EQUAL(Dashboard::Usb, s.dashboard);  // still running: no countdown applies
+  note_activity(s, 5000);
+  TEST_ASSERT_EQUAL_UINT32(1000, s.last_activity_ms);
+}
+
 void test_activity_without_session_is_ignored() {
   State s;
   note_activity(s, 123);
@@ -81,7 +108,7 @@ void test_activity_without_session_is_ignored() {
 
 void test_countdown_survives_uptime_wrap() {
   State s;
-  start_dashboard(s, 0xfffff000u);
+  start_dashboard(s, Dashboard::Wifi, 0xfffff000u);
   TEST_ASSERT_EQUAL_UINT32(kIdle - 0x2000, dashboard_remaining_ms(s, 0x00001000u, kIdle));
 }
 
@@ -127,9 +154,12 @@ int main(int, char **) {
   RUN_TEST(test_long_hold_resets_count);
   RUN_TEST(test_boot_state_is_scanning);
   RUN_TEST(test_standby_stops_all_detection);
-  RUN_TEST(test_dashboard_pauses_detection_and_restores_mode);
-  RUN_TEST(test_selection_during_session_applies_after);
-  RUN_TEST(test_session_expires_after_inactivity);
+  RUN_TEST(test_wifi_dashboard_pauses_detection_and_restores_mode);
+  RUN_TEST(test_selection_during_wifi_session_applies_after);
+  RUN_TEST(test_usb_dashboard_keeps_detection_in_selected_mode);
+  RUN_TEST(test_off_is_not_a_session);
+  RUN_TEST(test_wifi_session_expires_after_inactivity);
+  RUN_TEST(test_usb_session_never_times_out);
   RUN_TEST(test_activity_without_session_is_ignored);
   RUN_TEST(test_countdown_survives_uptime_wrap);
   return UNITY_END();

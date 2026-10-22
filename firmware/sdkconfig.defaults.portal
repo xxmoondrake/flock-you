@@ -1,4 +1,0 @@
-# Test builds only (the *_portal PlatformIO environments): present the
-# dashboards as a captive portal so phones open the status page in their
-# "sign in to network" window. Not adopted by the design plan.
-CONFIG_FY_DASHBOARD_CAPTIVE_PORTAL=y

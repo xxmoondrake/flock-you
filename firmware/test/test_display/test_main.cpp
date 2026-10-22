@@ -416,6 +416,36 @@ void test_device_menu_renders_through_dispatch() {
   TEST_ASSERT_TRUE(differs);
 }
 
+void test_usb_dashboard_screens() {
+  UiModel m = base_model();
+  m.dashboard_active = true;
+  m.dashboard_usb = true;
+  snprintf(m.dashboard_address, sizeof(m.dashboard_address), "192.168.7.1");
+  Canvas home;
+  fy::ui::render_home(home, m);
+  TEST_ASSERT_FALSE(home.pixel(127, 12));  // detection keeps running: no inverted row
+  Canvas device;
+  fy::ui::render_device(device, m);
+  maybe_write_pbm(device, "screen_device_usb");
+  TEST_ASSERT_TRUE(lit_pixels(device, 0, 20, 128, 8) > 0);  // still detecting
+  TEST_ASSERT_TRUE(device.pixel(127, 32));                   // inverted "USB dashboard on"
+  TEST_ASSERT_TRUE(lit_pixels(device, 0, 38, 128, 8) > 0);  // page address
+}
+
+void test_dashboard_submenu_renders() {
+  UiModel m = base_model();
+  UiState s;
+  s.screen = fy::ui::Screen::Device;
+  s.overlay = fy::ui::Overlay::DashboardMenu;
+  s.item = 1;
+  Canvas c;
+  fy::ui::render(c, m, s);
+  maybe_write_pbm(c, "screen_dashboard_menu");
+  TEST_ASSERT_TRUE(c.pixel(127, 3));    // title bar
+  TEST_ASSERT_TRUE(c.pixel(127, 24));   // highlighted "WiFi dashboard"
+  TEST_ASSERT_FALSE(c.pixel(127, 14));  // "USB dashboard" not highlighted
+}
+
 void test_message_uses_bottom_row() {
   UiModel m = base_model();
   UiState s;
@@ -438,6 +468,8 @@ int main(int, char **) {
   RUN_TEST(test_device_screen_without_dashboard);
   RUN_TEST(test_device_screen_shows_connection_details);
   RUN_TEST(test_device_menu_renders_through_dispatch);
+  RUN_TEST(test_usb_dashboard_screens);
+  RUN_TEST(test_dashboard_submenu_renders);
   RUN_TEST(test_low_battery_notice);
   RUN_TEST(test_pixels_use_ssd1306_page_order);
   RUN_TEST(test_out_of_range_pixels_are_clipped);

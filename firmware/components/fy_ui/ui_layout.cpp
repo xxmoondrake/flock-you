@@ -17,9 +17,10 @@
 //
 // 1 Detections: distinct devices per device type, this session and stored.
 // 2 Data management: storage use and history; hold for the data menu.
-// 3 Device management: mode and Wi-Fi dashboard; hold for the device menu.
-//   While the dashboard runs it shows the SSID, the passkey (only while it
-//   is still the generated one), and the status page address.
+// 3 Device management: mode and dashboards; hold for the device menu. During
+//   a Wi-Fi session it shows the SSID, the passkey (only while it is still
+//   the generated one), and the page address; during a USB session, the
+//   page address.
 //
 // Menus, the erase confirmation, erase progress, and the power-off prompt
 // replace the screen while active. Transient notices use the bottom row.
@@ -125,6 +126,8 @@ void render_menu(Canvas &c, const UiModel &m, const UiState &s) {
     y = 31;
   } else if (s.overlay == Overlay::DeviceMenu) {
     title(c, "DEVICE MENU");
+  } else if (s.overlay == Overlay::DashboardMenu) {
+    title(c, "START DASHBOARD");
   } else {
     title(c, "DATA MENU");
   }
@@ -134,7 +137,7 @@ void render_menu(Canvas &c, const UiModel &m, const UiState &s) {
       // Mark the selected mode; name the dashboard item by what it will do.
       if (i == 0 && !m.standby) label = "Scanning - selected";
       if (i == 1 && m.standby) label = "Standby - selected";
-      if (i == 2) label = m.dashboard_active ? "Stop WiFi dashboard" : "Start WiFi dashboard";
+      if (i == 2) label = m.dashboard_active ? "Stop dashboard" : "Start dashboard";
     }
     text_at(c, y, label, i == s.item);
   }
@@ -229,7 +232,7 @@ void render_home(Canvas &c, const UiModel &m) {
 
   // Row 1: capture state. Standby and the dashboard are shown inverted so the
   // screen never implies detection that is not running.
-  if (m.dashboard_active) {
+  if (m.dashboard_active && !m.dashboard_usb) {
     line(c, 1, "DASHBOARD ON, NO SCAN", true);
   } else if (m.standby) {
     line(c, 1, "STANDBY: NOT SCANNING", true);
@@ -334,20 +337,29 @@ void render_device(Canvas &c, const UiModel &m) {
   snprintf(buf, sizeof(buf), "Mode: %s", m.standby ? "Standby" : "Scanning");
   text_at(c, kListY[0], buf);
 
+  const char *detecting = m.wifi_capture && m.ble_scan ? "Detecting WiFi + BLE"
+                          : m.wifi_capture             ? "Detecting WiFi only"
+                          : m.ble_scan                 ? "Detecting BLE only"
+                                                       : "Not detecting";
   if (!m.dashboard_active) {
-    const char *detecting = m.wifi_capture && m.ble_scan ? "Detecting WiFi + BLE"
-                            : m.wifi_capture             ? "Detecting WiFi only"
-                            : m.ble_scan                 ? "Detecting BLE only"
-                                                         : "Not detecting";
     text_at(c, kListY[1], detecting);
-    text_at(c, kListY[2], "WiFi dashboard off");
+    text_at(c, kListY[2], "Dashboard off");
     if (m.dashboard_failed) text_at(c, kListY[3], "Last start failed");
     text_at(c, kListY[5], "Hold: device menu");
     return;
   }
+  if (m.dashboard_usb) {
+    // Detection keeps running; the page is on the USB-C cable's network.
+    text_at(c, kListY[1], detecting);
+    text_at(c, kListY[2], "USB dashboard on", true);
+    snprintf(buf, sizeof(buf), "http://%s", m.dashboard_address[0] ? m.dashboard_address : "?");
+    text_at(c, kListY[3], buf);
+    text_at(c, kListY[5], "Hold: device menu");
+    return;
+  }
 
-  // Dashboard session: how to connect. The passkey shows only while it is
-  // still the generated one.
+  // Wi-Fi session: how to connect. The passkey shows only while it is still
+  // the generated one.
   char left[8];
   format_age(m.dashboard_left_ms, left, sizeof(left));
   snprintf(buf, sizeof(buf), "Dashboard %s left", left);
