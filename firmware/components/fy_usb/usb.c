@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: MIT
+//
+// Written in C because the TinyUSB and esp_netif configuration helpers are C
+// compound-literal macros.
+
+#include "fy_usb.h"
+
+#include "sdkconfig.h"
+
+#if CONFIG_FY_USB_DASHBOARD
+
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "esp_check.h"
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_netif.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "hal/usb_serial_jtag_ll.h"
+#include "soc/rtc_cntl_reg.h"
+#include "tinyusb.h"
+#include "tinyusb_cdc_acm.h"
+#include "tinyusb_console.h"
+#include "tinyusb_default_config.h"
+#include "tinyusb_net.h"
+
+#include "fy_dashboard_page.h"
+
+static const char *TAG = "usb";
+
+// 192.168.7.0/24 is unlikely to collide with a phone's or PC's own networks.
+#define FY_USB_IP ESP_IP4TOADDR(192, 168, 7, 1)
+#define FY_USB_NETMASK ESP_IP4TOADDR(255, 255, 255, 0)
+#define FY_TOUCH_BAUD 1200
+#define FY_TX_TIMEOUT_MS 100
+
+static esp_netif_t *s_netif;
+static volatile bool s_touch_baud;  // the host set the line to 1200 baud
+
+// ---- Network interface glue --------------------------------------------------
+
+// lwIP to USB: the frame only has to stay valid for the call.
+static esp_err_t netif_transmit(void *handle, void *buffer, size_t len)
+{
+    (void)handle;
+    if (len > UINT16_MAX) return ESP_ERR_INVALID_SIZE;
+    // Fails while the host has not configured the device; lwIP retries.
+    tinyusb_net_send_sync(buffer, (uint16_t)len, NULL, pdMS_TO_TICKS(FY_TX_TIMEOUT_MS));
+    return ESP_OK;
+}
+
+static void netif_free_rx(void *handle, void *buffer)
+{
+    (void)handle;
+    free(buffer);
+}
+
+// USB to lwIP. TinyUSB reuses its buffer after this returns, so the frame is
+// copied; lwIP frees the copy through netif_free_rx.
+static esp_err_t usb_receive(void *buffer, uint16_t len, void *ctx)
+{
+    (void)ctx;
+    if (!s_netif || len == 0) return ESP_OK;
+    void *copy = malloc(len);
+    if (!copy) return ESP_ERR_NO_MEM;
+    memcpy(copy, buffer, len);
+    return esp_netif_receive(s_netif, copy, len, copy);
+}
+
+static esp_err_t start_netif(const uint8_t device_mac[6])
+{
+    const esp_err_t init = esp_netif_init();
+    if (init != ESP_OK && init != ESP_ERR_INVALID_STATE) return init;
+
+    esp_netif_ip_info_t ip = {
+        .ip = {.addr = FY_USB_IP},
+        .netmask = {.addr = FY_USB_NETMASK},
+        .gw = {.addr = FY_USB_IP},
+    };
+    esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    base.flags = ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP;
+    base.ip_info = &ip;
+    base.get_ip_event = 0;
+    base.lost_ip_event = 0;
+    base.if_key = "USB_NCM";
+    base.if_desc = "usb";
+    base.route_prio = 5;
+    esp_netif_driver_ifconfig_t driver = {
+        .handle = (void *)1,  // unused, but must not be NULL
+        .transmit = netif_transmit,
+        .driver_free_rx_buffer = netif_free_rx,
+    };
+    esp_netif_config_t cfg = {
+        .base = &base,
+        .driver = &driver,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH,
+    };
+    s_netif = esp_netif_new(&cfg);
+    if (!s_netif) return ESP_ERR_NO_MEM;
+    ESP_RETURN_ON_ERROR(esp_netif_set_mac(s_netif, (uint8_t *)device_mac), TAG, "set_mac");
+
+    // Offer an address only: no gateway and no DNS, so the host does not
+    // route its internet traffic to the detector.
+    uint8_t off = 0;
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(s_netif, ESP_NETIF_OP_SET,
+                                               ESP_NETIF_ROUTER_SOLICITATION_ADDRESS, &off,
+                                               sizeof(off)),
+                        TAG, "no router");
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_option(s_netif, ESP_NETIF_OP_SET,
+                                               ESP_NETIF_DOMAIN_NAME_SERVER, &off, sizeof(off)),
+                        TAG, "no dns");
+    esp_netif_action_start(s_netif, NULL, 0, NULL);
+    esp_netif_action_connected(s_netif, NULL, 0, NULL);
+    return ESP_OK;
+}
+
+// ---- Serial bootloader on request ------------------------------------------------
+
+// Hands the internal USB PHY back to USB Serial/JTAG, which the ROM serial
+// bootloader uses, and restarts into it.
+static void reboot_to_bootloader(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(50));  // let the host finish its request
+    ESP_LOGW(TAG, "1200-baud touch: rebooting into the serial bootloader");
+    tinyusb_driver_uninstall();
+    usb_serial_jtag_ll_phy_enable_external(false);
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+}
+
+static void on_line_coding(int itf, cdcacm_event_t *event)
+{
+    (void)itf;
+    s_touch_baud = event->line_coding_changed_data.p_line_coding->bit_rate == FY_TOUCH_BAUD;
+}
+
+// The touch: the host opens the port at 1200 baud and drops DTR. A terminal
+// at any other rate never triggers it.
+static void on_line_state(int itf, cdcacm_event_t *event)
+{
+    (void)itf;
+    if (s_touch_baud && !event->line_state_changed_data.dtr) {
+        xTaskCreate(reboot_to_bootloader, "fy_usb_boot", 3072, NULL, 5, NULL);
+    }
+}
+
+// ---- Start -------------------------------------------------------------------------
+
+esp_err_t fy_usb_start(void)
+{
+    if (s_netif) return ESP_OK;
+
+    uint8_t device_mac[6];
+    uint8_t host_mac[6];
+    ESP_RETURN_ON_ERROR(esp_read_mac(device_mac, ESP_MAC_ETH), TAG, "read_mac");
+    // The host's side of the link needs its own address: a locally
+    // administered one derived from the device's.
+    ESP_RETURN_ON_ERROR(esp_derive_local_mac(host_mac, device_mac), TAG, "derive_mac");
+
+    const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
+    ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "driver_install");
+
+    const tinyusb_config_cdcacm_t acm = {
+        .cdc_port = TINYUSB_CDC_ACM_0,
+        .callback_line_state_changed = on_line_state,
+        .callback_line_coding_changed = on_line_coding,
+    };
+    ESP_RETURN_ON_ERROR(tinyusb_cdcacm_init(&acm), TAG, "cdcacm_init");
+    ESP_RETURN_ON_ERROR(tinyusb_console_init(TINYUSB_CDC_ACM_0), TAG, "console_init");
+
+    tinyusb_net_config_t net = {
+        .on_recv_callback = usb_receive,
+    };
+    memcpy(net.mac_addr, host_mac, sizeof(net.mac_addr));
+    ESP_RETURN_ON_ERROR(tinyusb_net_init(&net), TAG, "net_init");
+    ESP_RETURN_ON_ERROR(start_netif(device_mac), TAG, "netif");
+    ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "status page");
+
+    ESP_LOGI(TAG, "USB console and network up; status page http://192.168.7.1/");
+    return ESP_OK;
+}
+
+#else  // CONFIG_FY_USB_DASHBOARD
+
+esp_err_t fy_usb_start(void) { return ESP_ERR_NOT_SUPPORTED; }
+
+#endif  // CONFIG_FY_USB_DASHBOARD

@@ -4,7 +4,8 @@
 // in fy_board; capture, matching, and reporting in fy_detector; the GNSS
 // receiver in fy_gps; the battery monitor in fy_battery; storage in
 // fy_recorder; the screens in fy_ui; the status LED in fy_status_led; modes
-// in fy_device; and the Wi-Fi dashboard in fy_dashboard.
+// in fy_device; the Wi-Fi dashboard in fy_dashboard; and the USB dashboard
+// in fy_usb.
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -22,6 +23,7 @@
 #include "fy_recorder.h"
 #include "fy_status_led.h"
 #include "fy_ui.h"
+#include "fy_usb.h"
 
 static const char *TAG = "main";
 
@@ -94,5 +96,7 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(fy_detector_start());
   // Every boot starts scanning with the Wi-Fi dashboard off.
   optional("device modes", fy_device_start());
+  // On the XIAO the console moves to the USB serial port from here on.
+  optional("USB dashboard", fy_usb_start());
   optional("display", fy_ui_start());
 }

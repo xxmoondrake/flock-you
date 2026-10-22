@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # USB composite device (CDC-ACM console and CDC-NCM network) for the XIAO's
+  # USB dashboard. Pinned exactly; dependencies.lock records the resolved
+  # TinyUSB version. Update deliberately.
+  espressif/esp_tinyusb: "==2.4.0"

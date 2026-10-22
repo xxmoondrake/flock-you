@@ -1,0 +1,14 @@
+menu "Detector USB dashboard"
+
+    config FY_USB_DASHBOARD
+        bool "Serve the status page over USB networking, with a USB console"
+        depends on TINYUSB_NET_MODE_NCM && TINYUSB_CDC_ENABLED
+        default y
+        help
+            Turns the native USB port into a composite device: a CDC-ACM
+            serial port that becomes the console, and a CDC-NCM network
+            interface at 192.168.7.1 serving the status page. Only offered
+            when the TinyUSB NCM and CDC options are enabled, which the XIAO's
+            sdkconfig defaults do.
+
+endmenu

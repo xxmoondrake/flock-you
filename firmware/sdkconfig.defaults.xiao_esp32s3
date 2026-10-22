@@ -7,3 +7,12 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # No display to show a per-device passkey: the Wi-Fi dashboard uses a shared
 # one. Change it for your own builds.
 CONFIG_FY_DASHBOARD_PASSKEY="fy-dashboard"
+
+# USB dashboard (fy_usb): a composite USB device with a CDC-ACM console and a
+# CDC-NCM network interface. Early boot logs still go to USB Serial/JTAG;
+# the console moves to the CDC-ACM port once the USB device starts.
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=1
+CONFIG_TINYUSB_NET_MODE_NCM=y
+CONFIG_TINYUSB_DESC_PRODUCT_STRING="Detector"
+CONFIG_TINYUSB_DESC_CDC_STRING="Detector console"
