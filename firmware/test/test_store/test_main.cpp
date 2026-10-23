@@ -223,6 +223,52 @@ void test_clear() {
   TEST_ASSERT_EQUAL_UINT32(1, seqs(log).size());
 }
 
+void test_read_sector_skips_invalid_slots() {
+  MemFlash f(2);
+  RecordLog log(f);
+  log.mount();
+  for (int i = 0; i < 5; i++) {
+    BatteryRecord r = battery(i, 3900 + i);
+    log.append(&r);
+  }
+  f.data_[2 * kRecordSize + 40] ^= 0xff;  // damage the third record
+  TEST_ASSERT_EQUAL_UINT32(2, log.sectors());
+  TEST_ASSERT_EQUAL_UINT32(0, log.newest_sector());
+  static uint8_t buf[kSectorSize];
+  TEST_ASSERT_EQUAL_UINT32(4, log.read_sector(0, buf));
+  const uint16_t want[] = {3900, 3901, 3903, 3904};
+  for (size_t i = 0; i < 4; i++) {
+    BatteryRecord r;
+    memcpy(&r, buf + i * kRecordSize, sizeof(r));
+    TEST_ASSERT_TRUE(is_valid(&r));
+    TEST_ASSERT_EQUAL_UINT16(want[i], r.mv);
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, log.read_sector(1, buf));  // blank
+  TEST_ASSERT_EQUAL_UINT32(0, log.read_sector(2, buf));  // out of range
+}
+
+void test_newest_sector_when_the_next_write_starts_a_sector() {
+  MemFlash f(3);
+  RecordLog log(f);
+  log.mount();
+  TEST_ASSERT_EQUAL_UINT32(2, log.newest_sector());  // empty: any order works
+  for (size_t i = 0; i < 2 * kSlotsPerSector; i++) {
+    BatteryRecord r = battery(i, 3900);
+    log.append(&r);
+  }
+  // Sector 2 is next and still blank; sector 1 has the newest records.
+  TEST_ASSERT_EQUAL_UINT32(1, log.newest_sector());
+  for (size_t i = 0; i < kSlotsPerSector; i++) {
+    BatteryRecord r = battery(i, 3900);
+    log.append(&r);
+  }
+  // Full: the next write erases sector 0, which holds the oldest records.
+  TEST_ASSERT_EQUAL_UINT32(2, log.newest_sector());
+  BatteryRecord r = battery(0, 3900);
+  log.append(&r);
+  TEST_ASSERT_EQUAL_UINT32(0, log.newest_sector());
+}
+
 // ---- Encounter tracking --------------------------------------------------------
 
 void test_sightings_group_into_one_encounter() {
@@ -338,6 +384,78 @@ void test_tracker_flush_writes_changed_encounters() {
   TEST_ASSERT_EQUAL_UINT32(0, emitted.size());  // nothing changed since
 }
 
+// ---- Reading encounters back -------------------------------------------------------
+
+uint64_t encounter_key(const EncounterRecord &r) {
+  return (static_cast<uint64_t>(r.h.boot) << 32) | r.encounter;
+}
+
+void test_dedup_keeps_only_newest_snapshot() {
+  // Interleaved encounters with starts, checkpoints, closes, and a flush,
+  // across two boot sessions that reuse encounter numbers.
+  TrackerConfig cfg;
+  cfg.checkpoint_ms = 10000;
+  for (uint32_t boot = 1; boot <= 2; boot++) {
+    EncounterTracker t(boot, cfg, capture, nullptr);
+    t.on_sighting(sighting(1, 0, -70));
+    t.on_sighting(sighting(2, 500, -70));
+    t.on_sighting(sighting(1, 4000, -60));
+    t.tick(10000);  // checkpoint of device 1
+    t.on_sighting(sighting(2, 12000, -50));
+    t.on_sighting(sighting(3, 13000, -80));  // never changes: start only
+    t.flush(14000);
+    t.tick(14000 + cfg.absence_ms + 1);  // closes all three
+  }
+  std::vector<EncounterRecord> newest;  // what a reader keeps, newest first
+  EncounterDedup dedup;
+  for (auto it = emitted.rbegin(); it != emitted.rend(); ++it) {
+    if (dedup.keep(*it)) newest.push_back(*it);
+  }
+  TEST_ASSERT_EQUAL_UINT32(6, newest.size());  // three encounters per boot
+  for (const EncounterRecord &r : newest) {
+    TEST_ASSERT_TRUE(r.h.flags & kFlagFinal);  // the close is the newest snapshot
+    for (const EncounterRecord &o : newest) {
+      if (&o != &r) TEST_ASSERT_FALSE(encounter_key(o) == encounter_key(r));
+    }
+  }
+}
+
+void test_dedup_keeps_open_encounter_checkpoint() {
+  TrackerConfig cfg;
+  cfg.checkpoint_ms = 1000;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  t.on_sighting(sighting(1, 0, -70));
+  t.on_sighting(sighting(1, 500, -65));
+  t.tick(1500);  // checkpoint; then power is lost before the close
+  EncounterDedup dedup;
+  TEST_ASSERT_TRUE(dedup.keep(emitted[1]));
+  TEST_ASSERT_EQUAL_UINT16(2, emitted[1].count);
+  TEST_ASSERT_FALSE(dedup.keep(emitted[0]));
+}
+
+void test_dedup_overflow_lets_older_snapshots_through() {
+  // More encounters open at once than the set holds: the newest snapshot of
+  // each still comes first, and only remembered ones drop their older ones.
+  constexpr size_t kMany = EncounterDedup::kCapacity + 20;
+  std::vector<EncounterRecord> starts, finals;
+  for (size_t i = 0; i < kMany; i++) {
+    EncounterRecord r = {};
+    r.h.boot = 1;
+    r.encounter = static_cast<uint32_t>(i + 1);
+    r.count = 1;
+    starts.push_back(r);
+    r.count = 2;
+    r.h.flags = kFlagFinal;
+    finals.push_back(r);
+  }
+  EncounterDedup dedup;
+  size_t kept_finals = 0, kept_starts = 0;
+  for (const EncounterRecord &r : finals) kept_finals += dedup.keep(r) ? 1 : 0;
+  for (const EncounterRecord &r : starts) kept_starts += dedup.keep(r) ? 1 : 0;
+  TEST_ASSERT_EQUAL_UINT32(kMany, kept_finals);
+  TEST_ASSERT_EQUAL_UINT32(kMany - EncounterDedup::kCapacity, kept_starts);
+}
+
 void test_clear_reports_progress() {
   MemFlash f(40);
   RecordLog log(f);
@@ -396,6 +514,11 @@ int main(int, char **) {
   RUN_TEST(test_torn_write_is_skipped_and_not_reused);
   RUN_TEST(test_torn_first_slot_of_new_sector);
   RUN_TEST(test_clear);
+  RUN_TEST(test_read_sector_skips_invalid_slots);
+  RUN_TEST(test_newest_sector_when_the_next_write_starts_a_sector);
+  RUN_TEST(test_dedup_keeps_only_newest_snapshot);
+  RUN_TEST(test_dedup_keeps_open_encounter_checkpoint);
+  RUN_TEST(test_dedup_overflow_lets_older_snapshots_through);
   RUN_TEST(test_sightings_group_into_one_encounter);
   RUN_TEST(test_absence_starts_new_encounter);
   RUN_TEST(test_checkpoint_while_changing);

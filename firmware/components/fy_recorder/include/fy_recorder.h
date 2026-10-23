@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "esp_err.h"
@@ -56,6 +57,35 @@ void fy_recorder_request_save();
 
 // Saves open encounters and waits up to `timeout_ms` for completion.
 bool fy_recorder_save_and_wait(uint32_t timeout_ms);
+
+// ---- The dashboard browser's clock -------------------------------------------------
+
+// Sets the clock for sightings without GNSS time from a browser's Unix time
+// in milliseconds. Kept until reboot; ignored when before 2025.
+void fy_recorder_set_phone_time(uint64_t unix_ms);
+
+// True once a browser's clock has been set this boot.
+bool fy_recorder_phone_time_set();
+
+// ---- Reading stored records back (the dashboard) ----------------------------------
+
+// The log is read one 4 KB sector at a time, so the recorder waits at most
+// for one sector read and keeps writing in between.
+constexpr size_t kFyRecorderSectorBytes = 4096;
+
+struct fy_recorder_log_cursor {
+  uint32_t sectors;
+  uint32_t newest_sector;  // read it first, then each one before it (wrapping)
+  uint32_t next_seq;     // records with this seq or later postdate the snapshot
+};
+
+// Returns false when no log is mounted.
+bool fy_recorder_log_snapshot(fy_recorder_log_cursor *out);
+
+// Copies the valid records of `sector`, in slot order (oldest first), to
+// `buf` (kFyRecorderSectorBytes). Returns how many it copied. Safe from any
+// task.
+size_t fy_recorder_read_sector(uint32_t sector, uint8_t *buf);
 
 // Asks the recorder to erase every stored record, including battery samples;
 // progress is reported in the status. Only call after a deliberate,

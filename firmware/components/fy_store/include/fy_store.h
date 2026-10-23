@@ -71,7 +71,8 @@ struct __attribute__((packed)) Location {
 // never combine values from different moments.
 struct __attribute__((packed)) Observation {
   uint32_t uptime_ms;
-  uint32_t utc;  // Unix seconds from validated GNSS time; 0 = unknown
+  uint32_t utc;  // Unix seconds from validated GNSS time, else the dashboard
+                 // browser's clock; 0 = unknown
   int8_t rssi;
   uint8_t channel;  // Wi-Fi channel; 0 for BLE
   Location loc;
@@ -159,6 +160,20 @@ class RecordLog {
   // Records in the log, counting skipped (torn) slots.
   size_t used() const;
   uint32_t next_seq() const { return next_seq_; }
+  size_t sectors() const { return sectors_; }
+  // The sector holding the newest records. Reading it and then each sector
+  // before it (wrapping) visits records newest sector first. When the next
+  // write starts a sector, that sector still holds the oldest records and is
+  // visited last.
+  size_t newest_sector() const {
+    if (sectors_ == 0) return 0;
+    const size_t head = write_slot_ / kSlotsPerSector;
+    return write_slot_ % kSlotsPerSector ? head : (head + sectors_ - 1) % sectors_;
+  }
+
+  // Copies the valid records of `sector`, in slot order (oldest first), to
+  // `out`, which holds kSlotsPerSector records. Returns how many it copied.
+  size_t read_sector(size_t sector, uint8_t *out);
 
   // Calls fn(const uint8_t *record) for every valid record, oldest first.
   template <typename Fn>
@@ -245,6 +260,27 @@ class EncounterTracker {
   void *ctx_;
   uint32_t next_encounter_ = 1;
   Active active_[kMaxActive];
+};
+
+// ---- Reading encounters back -------------------------------------------------------
+
+// Keeps only the current snapshot of each encounter while records are read
+// newest first. An encounter's first snapshot is its only non-final record
+// with a single sighting, so a remembered encounter is forgotten once that
+// record is passed; the set therefore holds about as many encounters as were
+// open at once (EncounterTracker::kMaxActive). If it still fills, older
+// snapshots pass through and readers must keep the first of each.
+class EncounterDedup {
+ public:
+  static constexpr size_t kCapacity = 128;
+
+  // True when `rec` is the newest snapshot of its encounter seen so far.
+  bool keep(const EncounterRecord &rec);
+  void reset() { used_ = 0; }
+
+ private:
+  uint64_t keys_[kCapacity] = {};
+  size_t used_ = 0;
 };
 
 // ---- Distinct device counting ----------------------------------------------------

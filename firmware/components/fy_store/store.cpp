@@ -171,6 +171,18 @@ bool RecordLog::clear(Progress progress, void *ctx) {
   return ok;
 }
 
+size_t RecordLog::read_sector(size_t sector, uint8_t *out) {
+  if (sector >= sectors_ || !flash_.read(sector * kSectorSize, out, kSectorSize)) return 0;
+  size_t n = 0;
+  for (size_t slot = 0; slot < kSlotsPerSector; slot++) {
+    const uint8_t *rec = out + slot * kRecordSize;
+    if (!is_valid(rec)) continue;
+    if (n != slot) memmove(out + n * kRecordSize, rec, kRecordSize);
+    n++;
+  }
+  return n;
+}
+
 size_t RecordLog::used() const {
   uint32_t oldest = 0;
   for (size_t s = 0; s < sectors_; s++) {
@@ -179,6 +191,21 @@ size_t RecordLog::used() const {
   if (oldest == 0) return 0;
   const size_t n = next_seq_ - oldest;
   return n > capacity() ? capacity() : n;
+}
+
+// ---- Reading encounters back -------------------------------------------------------
+
+bool EncounterDedup::keep(const EncounterRecord &rec) {
+  const uint64_t key = (static_cast<uint64_t>(rec.h.boot) << 32) | rec.encounter;
+  // EncounterTracker::start writes the only non-final snapshot with one sighting.
+  const bool first_snapshot = rec.count == 1 && !(rec.h.flags & kFlagFinal);
+  for (size_t i = 0; i < used_; i++) {
+    if (keys_[i] != key) continue;
+    if (first_snapshot) keys_[i] = keys_[--used_];  // nothing older remains
+    return false;
+  }
+  if (!first_snapshot && used_ < kCapacity) keys_[used_++] = key;
+  return true;
 }
 
 // ---- Encounter tracking --------------------------------------------------------

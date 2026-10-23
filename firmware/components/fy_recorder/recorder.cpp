@@ -45,6 +45,8 @@ constexpr uint32_t kStatusIntervalMs = 60000;
 constexpr uint32_t kLoopWaitMs = 250;  // bounds the latency of save/erase requests
 // GNSS time older than this (receiver silent) is not used for timestamps.
 constexpr uint32_t kMaxTimeAgeMs = 10000;
+// Browser clocks before 2025 are not trusted.
+constexpr uint64_t kMinPhoneUnixMs = 1735689600000ull;
 
 static_assert(static_cast<int>(fy::DeviceType::Count) <= kFyRecorderMaxTypes,
               "raise kFyRecorderMaxTypes");
@@ -84,6 +86,10 @@ std::atomic<bool> erase_requested{false};
 portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
 fy_recorder_status status = {};  // guarded by status_lock
 
+// The dashboard browser's clock; guarded by status_lock.
+bool phone_clock_set = false;
+int64_t phone_clock_offset_s = 0;  // Unix seconds minus uptime seconds
+
 uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
 uint8_t type_of(uint8_t rule, const uint8_t mac[6]) {
@@ -91,12 +97,14 @@ uint8_t type_of(uint8_t rule, const uint8_t mac[6]) {
 }
 
 // Boot session counter, persisted in NVS so uptimes from different sessions
-// are never confused.
-uint32_t next_boot_session() {
+// are never confused. It also stays above every session in the log, so
+// (boot, encounter) keeps identifying an encounter after NVS is erased.
+uint32_t next_boot_session(uint32_t newest_logged) {
   nvs_handle_t h;
   uint32_t boot = 0;
   if (nvs_open("fy", NVS_READWRITE, &h) != ESP_OK) return 0;
   nvs_get_u32(h, "boot", &boot);
+  if (boot < newest_logged) boot = newest_logged;
   boot++;
   nvs_set_u32(h, "boot", boot);
   nvs_commit(h);
@@ -151,20 +159,26 @@ void encounter_sink(EncounterRecord &rec, void *) {
   portEXIT_CRITICAL(&status_lock);
 }
 
-// Time and the detector's own location at this moment. A stale fix is kept
-// with its stale state and age; it is never recorded as current.
+// Time and the detector's own location at this moment. GNSS time wins over
+// the dashboard browser's clock. A stale fix is kept with its stale state and
+// age; it is never recorded as current.
 void capture_context(uint32_t *utc, Location *loc) {
   *utc = 0;
   *loc = Location{};
   fy_gps_status g;
   fy_gps_get_status(&g);
-  if (!g.available) return;
-  if (g.nav.time_valid && g.time_age_ms < kMaxTimeAgeMs) {
+  if (g.available && g.nav.time_valid && g.time_age_ms < kMaxTimeAgeMs) {
     const fy::gps::UtcTime &t = g.nav.utc;
     *utc = fy::store::unix_seconds(t.year, t.month, t.day, t.hour, t.minute, t.second) +
            g.time_age_ms / 1000;
+  } else {
+    portENTER_CRITICAL(&status_lock);
+    const bool clock_set = phone_clock_set;
+    const int64_t clock_offset_s = phone_clock_offset_s;
+    portEXIT_CRITICAL(&status_lock);
+    if (clock_set) *utc = static_cast<uint32_t>(clock_offset_s + now_ms() / 1000);
   }
-  if (g.position_age_ms == UINT32_MAX) return;
+  if (!g.available || g.position_age_ms == UINT32_MAX) return;
   const LocationState state = g.position_current ? LocationState::Current : LocationState::Stale;
   loc->lat_e7 = static_cast<int32_t>(lround(g.nav.latitude_deg * 1e7));
   loc->lon_e7 = static_cast<int32_t>(lround(g.nav.longitude_deg * 1e7));
@@ -316,10 +330,14 @@ void recorder_task(void *) {
   }
 }
 
-// Tallies the stored history once at boot for the device screens.
-void scan_history() {
-  uint32_t encounters = 0, battery = 0, oldest = 0;
+// Tallies the stored history once at boot for the device screens. Returns
+// the newest boot session in the log.
+uint32_t scan_history() {
+  uint32_t encounters = 0, battery = 0, oldest = 0, newest_boot = 0;
   record_log->for_each([&](const uint8_t *rec) {
+    fy::store::RecordHeader h;
+    memcpy(&h, rec, sizeof(h));
+    if (h.boot > newest_boot) newest_boot = h.boot;
     uint32_t utc = 0;
     if (fy::store::record_type(rec) == fy::store::kTypeEncounter) {
       EncounterRecord e;
@@ -338,6 +356,7 @@ void scan_history() {
   status.encounter_records = encounters;
   status.battery_records = battery;
   status.oldest_utc = oldest;
+  return newest_boot;
 }
 
 }  // namespace
@@ -359,16 +378,14 @@ esp_err_t fy_recorder_start() {
     return ESP_FAIL;
   }
 
-  const uint32_t boot = next_boot_session();
+  // The recorder task does not exist yet, so status is not shared here.
+  const uint32_t scan_start = now_ms();
+  const uint32_t boot = next_boot_session(scan_history());
   fy::store::TrackerConfig cfg;
   cfg.absence_ms = CONFIG_FY_ENCOUNTER_ABSENCE_S * 1000u;
   cfg.checkpoint_ms = CONFIG_FY_ENCOUNTER_CHECKPOINT_S * 1000u;
   tracker = new (std::nothrow) EncounterTracker(boot, cfg, encounter_sink, nullptr);
   if (!tracker) return ESP_ERR_NO_MEM;
-
-  // The recorder task does not exist yet, so status is not shared here.
-  const uint32_t scan_start = now_ms();
-  scan_history();
   const size_t used = record_log->used();
   const size_t capacity = record_log->capacity();
   status.available = true;
@@ -422,4 +439,40 @@ bool fy_recorder_save_and_wait(uint32_t timeout_ms) {
 
 void fy_recorder_request_erase() {
   if (record_log) erase_requested = true;
+}
+
+void fy_recorder_set_phone_time(uint64_t unix_ms) {
+  if (unix_ms < kMinPhoneUnixMs) return;
+  const int64_t offset = static_cast<int64_t>(unix_ms / 1000) - static_cast<int64_t>(now_ms() / 1000);
+  portENTER_CRITICAL(&status_lock);
+  phone_clock_offset_s = offset;
+  phone_clock_set = true;
+  portEXIT_CRITICAL(&status_lock);
+}
+
+bool fy_recorder_phone_time_set() {
+  portENTER_CRITICAL(&status_lock);
+  const bool set = phone_clock_set;
+  portEXIT_CRITICAL(&status_lock);
+  return set;
+}
+
+static_assert(kFyRecorderSectorBytes == fy::store::kSectorSize, "sector size");
+
+bool fy_recorder_log_snapshot(fy_recorder_log_cursor *out) {
+  if (!record_log) return false;
+  xSemaphoreTake(log_mutex, portMAX_DELAY);
+  out->sectors = static_cast<uint32_t>(record_log->sectors());
+  out->newest_sector = static_cast<uint32_t>(record_log->newest_sector());
+  out->next_seq = record_log->next_seq();
+  xSemaphoreGive(log_mutex);
+  return out->sectors > 0;
+}
+
+size_t fy_recorder_read_sector(uint32_t sector, uint8_t *buf) {
+  if (!record_log) return 0;
+  xSemaphoreTake(log_mutex, portMAX_DELAY);
+  const size_t n = record_log->read_sector(sector, buf);
+  xSemaphoreGive(log_mutex);
+  return n;
 }
