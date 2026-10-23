@@ -58,7 +58,9 @@ struct Status {
   const char *board;
   uint32_t uptime_s;
   bool wifi_session;      // this request came over a Wi-Fi session (else USB)
-  bool detection_paused;  // a Wi-Fi session pauses detection
+  bool detection_paused;  // a Wi-Fi session is on, which pauses detection
+  bool wifi_capture;      // the detector's actual state, whatever the reason
+  bool ble_scan;
   uint16_t idle_minutes;  // a Wi-Fi session ends after this long without use
 
   bool battery_available;
@@ -80,6 +82,12 @@ struct Status {
   uint32_t records_capacity;
   uint32_t encounter_records;
   uint32_t record_seq;  // changes whenever a record is written
+  // The log's history: an erase or a reboot changes (boot, clears), after
+  // which a reader's copy is no longer the device's; records before
+  // oldest_seq have left the log.
+  uint32_t history_boot;
+  uint32_t history_clears;
+  uint32_t oldest_seq;
 
   bool passkey_temporary;  // the Wi-Fi passkey is still the generated one
 

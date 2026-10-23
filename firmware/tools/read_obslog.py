@@ -47,6 +47,15 @@ ENCOUNTER = struct.Struct("<I6sHbbBB21s21s21s29s")
 BATTERY = struct.Struct("<IIHHB")
 
 
+def csv_text(raw):
+    """Radio-controlled text made safe for spreadsheets, as the dashboard's CSV
+    export does: bytes outside printable ASCII become '?' (so a control
+    character cannot hide what follows), and a leading =, +, -, or @ gets an
+    apostrophe so the cell is not run as a formula."""
+    text = "".join(chr(b) if 0x20 <= b < 0x7f else "?" for b in raw)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
 def crc_ok(rec):
     crc = zlib.crc32(rec[12:], zlib.crc32(rec[:8]))
     return crc == struct.unpack_from("<I", rec, 8)[0]
@@ -118,7 +127,7 @@ def main():
                 "transport": "ble" if flags & 0x02 else "wifi",
                 "rule": RULES[rule] if rule < len(RULES) else f"rule_{rule}",
                 "mac": ":".join(f"{b:02x}" for b in mac),
-                "name": name.split(b"\0")[0].decode("ascii", "replace"),
+                "name": csv_text(name.split(b"\0")[0]),
                 "count": count, "rssi_min": rssi_min, "rssi_max": rssi_max,
             }
             for raw, prefix in ((first, "first"), (last, "last"), (best, "best")):

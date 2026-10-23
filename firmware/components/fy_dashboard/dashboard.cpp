@@ -68,7 +68,13 @@ const char *TAG = "dashboard";
 constexpr const char *kNvsNamespace = "fy_dash";
 constexpr uint8_t kMaxClients = 2;
 constexpr size_t kPageCap = 4096;
-constexpr size_t kBodyCap = 512;
+// Form bodies: three percent-encoded 64-character passwords fit.
+constexpr size_t kBodyCap = 1024;
+// A request body must arrive within this long, however it trickles in; each
+// receive waits at most kRecvTimeoutS, so a stalled client is cut off within
+// about 7 s.
+constexpr int64_t kBodyDeadlineUs = 5 * 1000 * 1000;
+constexpr uint16_t kRecvTimeoutS = 2;
 constexpr const char *kCookie = "fy_session";
 
 bool netif_initialized = false;
@@ -249,7 +255,7 @@ void gather_status(fy::dashboard::Status &s) {
   s.board = fy_board_name();
   s.uptime_s = static_cast<uint32_t>(esp_timer_get_time() / 1000000);
   s.wifi_session = access_point_on;
-  s.detection_paused = access_point_on;  // a Wi-Fi session pauses detection
+  s.detection_paused = access_point_on;  // the reason when capture is off in a session
   s.idle_minutes = static_cast<uint16_t>(CONFIG_FY_DASHBOARD_IDLE_S / 60);
   s.passkey_temporary = access_point_on && passkey_temporary;
 
@@ -269,6 +275,8 @@ void gather_status(fy::dashboard::Status &s) {
 
   fy_detector_status d;
   fy_detector_get_status(&d);
+  s.wifi_capture = d.wifi_capture;
+  s.ble_scan = d.ble_scan;
   s.reported = d.reported;
   s.reported_specific = d.reported_specific;
 
@@ -446,8 +454,12 @@ bool logged_in(httpd_req_t *req) {
   session_token(req, token, sizeof(token));
   const bool background = background_request(req);
   if (!sessions.touch(token, now_ms(), !background)) return false;
-  // A request the owner made keeps a Wi-Fi session open.
-  if (request_hook && !background) request_hook();
+  // A request the owner made keeps a Wi-Fi session open. Logged during a
+  // session, so a timer that does not run out can be traced to its request.
+  if (request_hook && !background) {
+    if (access_point_on) ESP_LOGI(TAG, "activity: %s", req->uri);
+    request_hook();
+  }
   return true;
 }
 
@@ -483,10 +495,10 @@ void load_notes() {
   nvs_close(nvs);
 }
 
-esp_err_t save_notes() {
+esp_err_t save_notes(const fy::dashboard::Notes &table) {
   uint8_t *buf = static_cast<uint8_t *>(malloc(fy::dashboard::Notes::kMaxBytes));
   if (!buf) return ESP_ERR_NO_MEM;
-  const size_t len = notes.serialize(buf, fy::dashboard::Notes::kMaxBytes);
+  const size_t len = table.serialize(buf, fy::dashboard::Notes::kMaxBytes);
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
   if (err == ESP_OK) {
@@ -517,24 +529,51 @@ bool same_origin(httpd_req_t *req) {
   return strncmp(origin, "http://", 7) == 0 && strcmp(origin + 7, host) == 0;
 }
 
-bool read_body(httpd_req_t *req, char *buf, size_t cap, size_t *len) {
-  if (req->content_len >= cap) return false;
-  size_t got = 0;
-  while (got < req->content_len) {
-    const int r = httpd_req_recv(req, buf + got, req->content_len - got);
-    if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
-    if (r <= 0) return false;
-    got += static_cast<size_t>(r);
-  }
-  buf[got] = '\0';
-  *len = got;
-  return true;
-}
-
 // Wipes a password from a buffer once it is no longer needed.
 void wipe(void *p, size_t n) {
   volatile uint8_t *v = static_cast<volatile uint8_t *>(p);
   while (n--) *v++ = 0;
+}
+
+// A POST body. Handlers read it before anything else, so that no response
+// leaves unread bytes on a connection the browser may reuse; it may hold a
+// password, so it is wiped afterwards.
+struct Body {
+  char text[kBodyCap];
+  size_t len = 0;
+  ~Body() { wipe(text, sizeof(text)); }
+};
+
+enum class BodyResult : uint8_t { Ok, TooLarge, TimedOut, Failed };
+
+// Reads the whole body by a fixed deadline that partial progress does not
+// extend.
+BodyResult read_body(httpd_req_t *req, Body &body) {
+  if (req->content_len >= sizeof(body.text)) return BodyResult::TooLarge;
+  const int64_t deadline = esp_timer_get_time() + kBodyDeadlineUs;
+  size_t got = 0;
+  while (got < req->content_len) {
+    if (esp_timer_get_time() >= deadline) return BodyResult::TimedOut;
+    const int r = httpd_req_recv(req, body.text + got, req->content_len - got);
+    if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    if (r <= 0) return BodyResult::Failed;
+    got += static_cast<size_t>(r);
+  }
+  body.text[got] = '\0';
+  body.len = got;
+  return BodyResult::Ok;
+}
+
+// Answers a body that was not read whole and closes the connection: its
+// unread bytes would otherwise be taken for the next request.
+esp_err_t reject_body(httpd_req_t *req, BodyResult result) {
+  httpd_resp_set_hdr(req, "Connection", "close");
+  if (result == BodyResult::TooLarge) {
+    httpd_resp_send_err(req, HTTPD_413_CONTENT_TOO_LARGE, "Request too large");
+  } else if (result == BodyResult::TimedOut) {
+    httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timed out");
+  }
+  return ESP_FAIL;  // closes the connection
 }
 
 // ---- Pages ---------------------------------------------------------------------------------
@@ -588,19 +627,19 @@ esp_err_t login_get(httpd_req_t *req) {
 }
 
 esp_err_t login_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
   if (portal_redirected(req)) return ESP_OK;
   if (request_hook) request_hook();
   if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
   const uint32_t wait = throttle.wait_ms(now_ms());
   if (wait) return send_login(req, LoginNotice::Wait, (wait + 999) / 1000);
 
-  char body[kBodyCap];
-  size_t len = 0;
   char password[fy::dashboard::kMaxPasswordLen * 2 + 1];
-  const bool ok = read_body(req, body, sizeof(body), &len) &&
-                  fy::dashboard::form_value(body, len, "password", password, sizeof(password)) &&
-                  verify_password(password);
-  wipe(body, sizeof(body));
+  const bool ok =
+      fy::dashboard::form_value(body.text, body.len, "password", password, sizeof(password)) &&
+      verify_password(password);
   wipe(password, sizeof(password));
   if (!ok) {
     throttle.failed(now_ms());
@@ -616,6 +655,9 @@ esp_err_t login_post(httpd_req_t *req) {
 }
 
 esp_err_t logout_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
   if (portal_redirected(req)) return ESP_OK;
   if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
   char token[fy::dashboard::kTokenLen + 8];
@@ -632,36 +674,31 @@ esp_err_t password_get(httpd_req_t *req) {
 }
 
 esp_err_t password_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
   if (portal_redirected(req)) return ESP_OK;
   if (!logged_in(req)) return see_other(req, "/login?m=exp");
   if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
 
-  char body[kBodyCap];
-  size_t len = 0;
   constexpr size_t kField = fy::dashboard::kMaxPasswordLen * 2 + 1;
   char current[kField] = "", fresh[kField] = "", confirm[kField] = "";
-  PasswordProblem problem = PasswordProblem::None;
   const bool first_login = password_is_default();
-  if (!read_body(req, body, sizeof(body), &len)) {
-    problem = PasswordProblem::TooLong;
-  } else {
-    fy::dashboard::form_value(body, len, "current", current, sizeof(current));
-    fy::dashboard::form_value(body, len, "new", fresh, sizeof(fresh));
-    fy::dashboard::form_value(body, len, "confirm", confirm, sizeof(confirm));
-    problem = fy::dashboard::check_new_password(fresh, confirm, kDefaultPassword);
-    // Logged in already proves the default on first login; later changes
-    // also need the current password, and wrong ones count as failed logins.
-    if (problem == PasswordProblem::None && !first_login) {
-      const uint32_t wait = throttle.wait_ms(now_ms());
-      if (wait || !verify_password(current)) {
-        if (!wait) throttle.failed(now_ms());
-        problem = PasswordProblem::WrongCurrent;
-      }
+  fy::dashboard::form_value(body.text, body.len, "current", current, sizeof(current));
+  fy::dashboard::form_value(body.text, body.len, "new", fresh, sizeof(fresh));
+  fy::dashboard::form_value(body.text, body.len, "confirm", confirm, sizeof(confirm));
+  PasswordProblem problem = fy::dashboard::check_new_password(fresh, confirm, kDefaultPassword);
+  // Logged in already proves the default on first login; later changes also
+  // need the current password, and wrong ones count as failed logins.
+  if (problem == PasswordProblem::None && !first_login) {
+    const uint32_t wait = throttle.wait_ms(now_ms());
+    if (wait || !verify_password(current)) {
+      if (!wait) throttle.failed(now_ms());
+      problem = PasswordProblem::WrongCurrent;
     }
   }
   esp_err_t stored = ESP_OK;
   if (problem == PasswordProblem::None) stored = store_password(fresh);
-  wipe(body, sizeof(body));
   wipe(current, sizeof(current));
   wipe(fresh, sizeof(fresh));
   wipe(confirm, sizeof(confirm));
@@ -696,7 +733,12 @@ esp_err_t status_get(httpd_req_t *req) {
   fy::dashboard::Status s;
   gather_status(s);
   fy_recorder_log_cursor cursor;
-  if (fy_recorder_log_snapshot(&cursor)) s.record_seq = cursor.next_seq;
+  if (fy_recorder_log_snapshot(&cursor)) {
+    s.record_seq = cursor.next_seq;
+    s.history_boot = cursor.boot;
+    s.history_clears = cursor.clears;
+    s.oldest_seq = cursor.oldest_seq;
+  }
   s.phone_time = fy_recorder_phone_time_set();
   const size_t len = fy::dashboard::format_status_json(s, page, sizeof(page));
   if (!len) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Status too large");
@@ -715,7 +757,10 @@ struct Stream {
   fy::store::EncounterDedup dedup;
   char line[fy::dashboard::kEncounterTextCap];
   char chunk[2048];
-  char next_seq[12];  // header value; sent with the first chunk
+  // Header values; sent with the first chunk.
+  char next_seq[12];
+  char history[24];
+  char oldest_seq[12];
   size_t used = 0;
   bool failed = false;  // the client went away
 };
@@ -736,8 +781,13 @@ void stream_add(httpd_req_t *req, Stream &s, const char *text, size_t len) {
 // Every stored encounter, current snapshot only, newest first, with the
 // owner's notes. `?since=N` limits it to encounters updated in records N and
 // later (the page's live updates); the X-FY-Next-Seq header gives the N for
-// the next request. Downloads leave out ignored addresses unless
-// `?ignored=1`.
+// the next request. X-FY-History identifies the log's history ("boot-clears")
+// and X-FY-Oldest-Seq the oldest record still in it. The response is the
+// log as of its snapshot: if records leave the log before it is complete (an
+// erase, or the ring overwriting its oldest sector), it ends without its
+// terminating chunk, so the reader sees an incomplete response rather than a
+// finished mix of histories, and can retry. Downloads leave out ignored
+// addresses unless `?ignored=1`.
 esp_err_t stream_encounters(httpd_req_t *req, Format format, bool download) {
   if (portal_redirected(req)) return ESP_OK;
   if (!api_allowed(req)) return ESP_OK;
@@ -750,12 +800,18 @@ esp_err_t stream_encounters(httpd_req_t *req, Format format, bool download) {
   Stream *s = new (std::nothrow) Stream;
   if (!s) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
 
-  fy_recorder_log_cursor cursor;
+  fy_recorder_log_cursor cursor = {};
   const bool have_log = fy_recorder_log_snapshot(&cursor);
   snprintf(s->next_seq, sizeof(s->next_seq), "%lu",
            have_log ? static_cast<unsigned long>(cursor.next_seq) : 0ul);
+  snprintf(s->history, sizeof(s->history), "%lu-%lu", static_cast<unsigned long>(cursor.boot),
+           static_cast<unsigned long>(cursor.clears));
+  snprintf(s->oldest_seq, sizeof(s->oldest_seq), "%lu",
+           static_cast<unsigned long>(cursor.oldest_seq));
   no_store(req);
   httpd_resp_set_hdr(req, "X-FY-Next-Seq", s->next_seq);
+  httpd_resp_set_hdr(req, "X-FY-History", s->history);
+  httpd_resp_set_hdr(req, "X-FY-Oldest-Seq", s->oldest_seq);
   httpd_resp_set_type(req, format == Format::Json ? "application/json" : "text/csv; charset=utf-8");
   if (download) {
     httpd_resp_set_hdr(req, "Content-Disposition",
@@ -771,37 +827,36 @@ esp_err_t stream_encounters(httpd_req_t *req, Format format, bool download) {
   }
 
   size_t count = 0;
-  bool older = false;  // reached records before `since`
+  fy::dashboard::WalkEnd end = fy::dashboard::WalkEnd::Complete;
   if (have_log) {
-    for (uint32_t i = 0; i < cursor.sectors && !s->failed && !older; i++) {
-      const uint32_t sector = (cursor.newest_sector + cursor.sectors - i) % cursor.sectors;
-      const size_t n = fy_recorder_read_sector(sector, s->sector);
-      for (size_t j = n; j-- > 0 && !s->failed;) {
-        const uint8_t *raw = s->sector + j * fy::store::kRecordSize;
-        fy::store::RecordHeader h;
-        memcpy(&h, raw, sizeof(h));
-        if (h.seq >= cursor.next_seq) continue;  // written after the snapshot
-        if (h.seq < since) {  // every record from here on is older still
-          older = true;
-          break;
-        }
-        if (h.type != fy::store::kTypeEncounter) continue;
-        fy::store::EncounterRecord rec;
-        memcpy(&rec, raw, sizeof(rec));
-        if (!s->dedup.keep(rec)) continue;
-        const fy::dashboard::Note *note = notes.find(rec.mac);
-        if (skip_ignored && note && note->ignored) continue;
-        const size_t len = format == Format::Json
-                               ? fy::dashboard::encounter_json(rec, note, s->line, sizeof(s->line))
-                               : fy::dashboard::encounter_csv(rec, note, s->line, sizeof(s->line));
-        if (!len) continue;
-        if (format == Format::Json) stream_add(req, *s, count ? ",\n" : "\n", count ? 2 : 1);
-        stream_add(req, *s, s->line, len);
-        count++;
-      }
-    }
+    const fy::dashboard::LogWalk walk = {cursor.sectors, cursor.newest_sector, cursor.next_seq,
+                                         since, cursor.revision};
+    end = fy::dashboard::walk_encounters(
+        walk, s->sector, s->dedup,
+        [](uint32_t sector, uint8_t *buf, uint32_t *revision) {
+          return fy_recorder_read_sector(sector, buf, revision);
+        },
+        [&](const fy::store::EncounterRecord &rec) {
+          const fy::dashboard::Note *note = notes.find(rec.mac);
+          if (skip_ignored && note && note->ignored) return true;
+          const size_t len = format == Format::Json
+                                 ? fy::dashboard::encounter_json(rec, note, s->line, sizeof(s->line))
+                                 : fy::dashboard::encounter_csv(rec, note, s->line, sizeof(s->line));
+          if (!len) return true;
+          if (format == Format::Json) stream_add(req, *s, count ? ",\n" : "\n", count ? 2 : 1);
+          stream_add(req, *s, s->line, len);
+          count++;
+          return !s->failed;
+        });
   }
-  if (format == Format::Json) stream_add(req, *s, "\n]\n", 3);
+  // Records left the log during the walk, or since it ended (with the last
+  // chunk still to send): end without the terminating chunk.
+  fy_recorder_log_cursor after = {};
+  if (end == fy::dashboard::WalkEnd::Changed ||
+      (have_log && fy_recorder_log_snapshot(&after) && after.revision != cursor.revision)) {
+    s->failed = true;
+  }
+  if (format == Format::Json && !s->failed) stream_add(req, *s, "\n]\n", 3);
   stream_flush(req, *s);
   const bool failed = s->failed;
   delete s;
@@ -822,16 +877,14 @@ esp_err_t send_json(httpd_req_t *req, const char *json, size_t len) {
 
 // The browser's clock (t, Unix ms), for detections without GNSS time.
 esp_err_t phone_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
   if (portal_redirected(req)) return ESP_OK;
   if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
   if (!api_allowed(req)) return ESP_OK;
-  char body[kBodyCap];
-  size_t len = 0;
-  if (!read_body(req, body, sizeof(body), &len)) {
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
-  }
   char t[24];
-  if (fy::dashboard::form_value(body, len, "t", t, sizeof(t))) {
+  if (fy::dashboard::form_value(body.text, body.len, "t", t, sizeof(t))) {
     fy_recorder_set_phone_time(strtoull(t, nullptr, 10));
   }
   return send_json(req, "{}", 2);
@@ -858,30 +911,42 @@ esp_err_t notes_get(httpd_req_t *req) {
 
 // Sets or clears the note on one address: mac, label, ignored ("1"), note.
 esp_err_t notes_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
   if (portal_redirected(req)) return ESP_OK;
   if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
   if (!api_allowed(req)) return ESP_OK;
-  char body[kBodyCap];
-  size_t len = 0;
+  const char *b = body.text;
+  const size_t len = body.len;
   char mac[24], label[24], ignored[4], text[fy::dashboard::kNoteTextCap * 3];
   fy::dashboard::Note note = {};
-  if (!read_body(req, body, sizeof(body), &len) ||
-      !fy::dashboard::form_value(body, len, "mac", mac, sizeof(mac)) ||
+  if (!fy::dashboard::form_value(b, len, "mac", mac, sizeof(mac)) ||
       !fy::dashboard::parse_mac(mac, note.mac)) {
     return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad address");
   }
-  if (fy::dashboard::form_value(body, len, "label", label, sizeof(label)) &&
+  if (fy::dashboard::form_value(b, len, "label", label, sizeof(label)) &&
       !fy::dashboard::parse_label(label, &note.label)) {
     return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad label");
   }
-  note.ignored = fy::dashboard::form_value(body, len, "ignored", ignored, sizeof(ignored)) &&
+  note.ignored = fy::dashboard::form_value(b, len, "ignored", ignored, sizeof(ignored)) &&
                  strcmp(ignored, "1") == 0;
-  if (fy::dashboard::form_value(body, len, "note", text, sizeof(text))) {
+  if (fy::dashboard::form_value(b, len, "note", text, sizeof(text))) {
     fy::dashboard::clean_note_text(text, note.text);
   }
   load_notes();
-  if (!notes.set(note)) return send_json_error(req, "409 Conflict", "notes full");
-  if (save_notes() != ESP_OK) return send_json_error(req, "500 Internal Server Error", "not saved");
+  bool restored = true;
+  const fy::dashboard::NoteSaveResult result = fy::dashboard::save_note(
+      notes, note,
+      [](const fy::dashboard::Notes &table, void *) { return save_notes(table) == ESP_OK; },
+      nullptr, &restored);
+  if (result == fy::dashboard::NoteSaveResult::Full) {
+    return send_json_error(req, "409 Conflict", "notes full");
+  }
+  if (result == fy::dashboard::NoteSaveResult::NotSaved) {
+    if (!restored) ESP_LOGW(TAG, "notes: stored copy may differ until the next save");
+    return send_json_error(req, "500 Internal Server Error", "not saved");
+  }
   return send_json(req, "{}", 2);
 }
 
@@ -957,6 +1022,7 @@ esp_err_t start_server() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;  // password hashing
   config.max_open_sockets = 4;
+  config.recv_wait_timeout = kRecvTimeoutS;
   config.max_uri_handlers = sizeof(kRoutes) / sizeof(kRoutes[0]);
   config.lru_purge_enable = true;
   config.uri_match_fn = httpd_uri_match_wildcard;

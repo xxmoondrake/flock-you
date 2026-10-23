@@ -8,8 +8,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace fy::store {
 
@@ -148,6 +150,8 @@ class RecordLog {
   explicit RecordLog(Flash &flash) : flash_(flash) {}
 
   // Scans the flash to find the newest record and the next write position.
+  // False when the flash cannot be read: an unreadable log is never taken
+  // for an empty one.
   bool mount();
   // Assigns the next sequence number, seals, and writes a kRecordSize record.
   bool append(void *record);
@@ -159,6 +163,27 @@ class RecordLog {
   size_t capacity() const { return sectors_ * kSlotsPerSector; }
   // Records in the log, counting skipped (torn) slots.
   size_t used() const;
+  // The lowest sequence number still in the log; 0 when it is empty.
+  uint32_t oldest_seq() const;
+  // Changes whenever records may have left the log (a sector erased to make
+  // room, a failed erase that changed flash, or a clear); ordinary appends
+  // leave it alone. A reader whose snapshot spans a change may hold a mix.
+  uint32_t revision() const { return revision_; }
+
+  // What append() did to the oldest sector to make room. When `known`, the
+  // erase succeeded and these counts (read just before it) left the log.
+  // Otherwise the outcome is uncertain (the erase failed after changing
+  // flash, or the sector could not be read first): reconcile from flash.
+  struct Eviction {
+    uint32_t encounters;
+    uint32_t battery;
+    bool known;
+  };
+  using Evicted = void (*)(const Eviction &eviction, void *ctx);
+  void set_eviction_hook(Evicted fn, void *ctx) {
+    evicted_ = fn;
+    evicted_ctx_ = ctx;
+  }
   uint32_t next_seq() const { return next_seq_; }
   size_t sectors() const { return sectors_; }
   // The sector holding the newest records. Reading it and then each sector
@@ -175,29 +200,61 @@ class RecordLog {
   // `out`, which holds kSlotsPerSector records. Returns how many it copied.
   size_t read_sector(size_t sector, uint8_t *out);
 
+  // Calls fn(const uint8_t *record) for every valid record of `sector`, in
+  // slot order. False when the flash cannot be read. `fn` must not use the
+  // log.
+  template <typename Fn>
+  bool for_each_in_sector(size_t sector, Fn &&fn) {
+    for (size_t first = 0; first < kSlotsPerSector; first += kChunkSlots) {
+      if (!read_chunk(sector, first)) return false;
+      for (size_t i = 0; i < kChunkSlots; i++) {
+        const uint8_t *rec = chunk_ + i * kRecordSize;
+        if (is_valid(rec)) fn(rec);
+      }
+    }
+    return true;
+  }
+
   // Calls fn(const uint8_t *record) for every valid record, oldest first.
   template <typename Fn>
   void for_each(Fn &&fn) {
     if (sectors_ == 0) return;
     const size_t head = write_slot_ / kSlotsPerSector;
-    for (size_t i = 1; i <= sectors_; i++) {
-      const size_t sector = (head + i) % sectors_;
-      for (size_t slot = 0; slot < kSlotsPerSector; slot++) {
-        uint8_t rec[kRecordSize];
-        if (!flash_.read(sector * kSectorSize + slot * kRecordSize, rec, sizeof(rec))) break;
-        if (is_valid(rec)) fn(static_cast<const uint8_t *>(rec));
-      }
-    }
+    for (size_t i = 1; i <= sectors_; i++) for_each_in_sector((head + i) % sectors_, fn);
   }
 
  private:
-  bool slot_blank(size_t slot);
+  // Flash reads cost mostly per call, so scans read several slots at once
+  // into a buffer of the log's own (callers serialize use of the log).
+  static constexpr size_t kChunkSlots = 8;
+  static_assert(kSlotsPerSector % kChunkSlots == 0, "whole chunks per sector");
+
+  enum class Slot : uint8_t { Blank, Programmed, Unreadable };
+  Slot probe_slot(size_t slot);
+  // Counts the valid records of a sector by type and finds its oldest; false
+  // when it cannot be read.
+  struct Census {
+    uint32_t encounters = 0;
+    uint32_t battery = 0;
+    uint32_t first_seq = 0;
+  };
+  bool census(size_t sector, Census *out);
+  bool make_room(size_t sector);
+  bool read_chunk(size_t sector, size_t first_slot) {
+    return flash_.read(sector * kSectorSize + first_slot * kRecordSize, chunk_, sizeof(chunk_));
+  }
 
   Flash &flash_;
   size_t sectors_ = 0;
   size_t write_slot_ = 0;  // absolute slot index of the next write
   uint32_t next_seq_ = 1;
-  uint32_t first_seq_[kMaxSectors] = {};  // seq in slot 0 of each sector; 0 = none
+  uint32_t revision_ = 0;
+  // The oldest seq in each sector, normally the one in its first slot; 0 =
+  // no records.
+  uint32_t first_seq_[kMaxSectors] = {};
+  Evicted evicted_ = nullptr;
+  void *evicted_ctx_ = nullptr;
+  uint8_t chunk_[kChunkSlots * kRecordSize] = {};
 };
 
 // ---- Encounter tracking --------------------------------------------------------
@@ -223,35 +280,48 @@ struct TrackerConfig {
 
 // Groups repeated sightings of the same address into encounters and emits
 // records to persist: when an encounter starts, at most every checkpoint
-// interval while it changes, and once when it closes.
+// interval while it changes, and once when it closes. A record the sink
+// fails to persist stays pending and is retried at most once per checkpoint
+// interval; a closed encounter whose final record is still pending keeps
+// its slot until written, unless the table fills, when it is dropped and
+// counted.
 class EncounterTracker {
  public:
   static constexpr size_t kMaxActive = 48;
-  using Sink = void (*)(EncounterRecord &rec, void *ctx);
+  // Returns true when the record was persisted.
+  using Sink = bool (*)(EncounterRecord &rec, void *ctx);
 
   EncounterTracker(uint32_t boot, const TrackerConfig &cfg, Sink sink, void *ctx)
       : boot_(boot), cfg_(cfg), sink_(sink), ctx_(ctx) {}
 
   void on_sighting(const Sighting &s);
-  // Closes idle encounters and checkpoints changed ones.
+  // Closes idle encounters, checkpoints changed ones, and retries pending
+  // writes.
   void tick(uint32_t now_ms);
-  // Writes every changed open encounter now (for example before power-off).
-  void flush(uint32_t now_ms);
+  // Writes every pending encounter now (for example before power-off).
+  // True when all of them were persisted.
+  bool flush(uint32_t now_ms);
+  // Forgets every open encounter without writing it (the log was cleared).
+  // Encounter numbers keep counting, so none is reused.
+  void discard();
 
   size_t active() const;
   uint32_t started() const { return next_encounter_ - 1; }
+  // Encounters given up with unpersisted changes because the table was full.
+  uint32_t dropped() const { return dropped_; }
 
  private:
   struct Active {
     bool used = false;
-    bool dirty = false;
+    bool dirty = false;    // changes not yet persisted
+    bool closing = false;  // closed; its final record is still pending
     uint8_t rank = 0;
-    uint32_t last_write_ms = 0;
+    uint32_t last_write_ms = 0;  // last write attempt
     EncounterRecord rec = {};
   };
 
   void start(Active &a, const Sighting &s);
-  void emit(Active &a, uint32_t now_ms);
+  bool emit(Active &a, uint32_t now_ms);
   void close(Active &a, uint32_t now_ms);
 
   uint32_t boot_;
@@ -259,7 +329,86 @@ class EncounterTracker {
   Sink sink_;
   void *ctx_;
   uint32_t next_encounter_ = 1;
+  uint32_t dropped_ = 0;
   Active active_[kMaxActive];
+};
+
+// The recorder's saves. Each request gets a ticket; a save covers every
+// ticket issued before it starts, so a request made while one runs is
+// answered by the next. A save succeeds only when everything accepted since
+// the previous save is persisted: its own writes succeed and no encounter
+// was given up in between (an older loss is reported once, not forever).
+class SaveLedger {
+ public:
+  // Any task. Returns the ticket to wait for.
+  uint32_t request() { return ++requested_; }
+  // Recorder task: the ticket a save starting now would cover, or 0.
+  uint32_t due() const {
+    const uint32_t r = requested_.load();
+    return r != covered_ ? r : 0;
+  }
+  // Recorder task: runs the save covering tickets up to `ticket`.
+  // `take_queued` hands the tracker every sighting queued before the save;
+  // then every pending encounter is written. Returns the result.
+  template <typename TakeQueued>
+  bool run(uint32_t ticket, EncounterTracker &tracker, uint32_t now_ms, TakeQueued &&take_queued) {
+    take_queued();
+    const bool written = tracker.flush(now_ms);
+    const bool none_lost = tracker.dropped() == dropped_at_last_save_;
+    dropped_at_last_save_ = tracker.dropped();
+    covered_ = ticket;
+    return written && none_lost;
+  }
+  // True once a save covering `ticket` has finished (`answered` is the
+  // ticket that save covered).
+  static bool answers(uint32_t answered, uint32_t ticket) {
+    return static_cast<int32_t>(answered - ticket) >= 0;
+  }
+
+ private:
+  std::atomic<uint32_t> requested_{0};
+  uint32_t covered_ = 0;  // recorder task only
+  uint32_t dropped_at_last_save_ = 0;
+};
+
+// Lets producers on other tasks queue items for the recorder while an erase
+// can cut them off. A producer takes a stamp before capturing an item and
+// queues it with the item; close() starts a boundary after which no stamp is
+// handed out and every earlier stamp is stale, so nothing captured before
+// the boundary is accepted after it. Every item turned away is counted once:
+// refused by admit(), emptied out of the queue at the boundary (discarded()),
+// or found stale when taken (accept()).
+class IngestGate {
+ public:
+  // Producer: the stamp for an item about to be captured, or 0 (counted)
+  // while closed. The generation is read before the open flag, so a stamp
+  // taken while a close() runs is either refused or already stale.
+  uint32_t admit() {
+    const uint32_t generation = generation_.load();
+    if (open_.load()) return generation;
+    dropped_++;
+    return 0;
+  }
+  void close() {
+    open_ = false;
+    generation_++;
+  }
+  void open() { open_ = true; }
+  // Consumer: an item it emptied out of its queue at the boundary.
+  void discarded() { dropped_++; }
+  // Consumer: true when an item stamped `stamp` was admitted after the last
+  // close(); a stale one is counted.
+  bool accept(uint32_t stamp) {
+    if (stamp != 0 && stamp == generation_.load()) return true;
+    dropped_++;
+    return false;
+  }
+  uint32_t dropped() const { return dropped_.load(); }
+
+ private:
+  std::atomic<bool> open_{true};
+  std::atomic<uint32_t> generation_{1};
+  std::atomic<uint32_t> dropped_{0};
 };
 
 // ---- Reading encounters back -------------------------------------------------------
@@ -334,6 +483,169 @@ class DistinctCounter {
   uint16_t counts_[kMaxTypes] = {};
   size_t used_ = 0;
   bool saturated_ = false;
+};
+
+// ---- Retained history ------------------------------------------------------------
+
+// Statistics over the records the log still holds: encounter and battery
+// record counts, the oldest timestamp, distinct devices per type, and the
+// newest boot session. The record counts follow writes and evictions
+// exactly. Distinct devices and the oldest timestamp cannot be taken back
+// when records leave the log, so an eviction (or rescan()) starts a rescan
+// that rebuilds them in place, a few sectors per step(); until it completes
+// they are not current and pending() is true. Records written during a
+// rescan are counted as they arrive and skipped by the scan; an eviction
+// during a rescan restarts it.
+template <size_t Capacity>
+class HistoryTally {
+ public:
+  // The device type an encounter counts under.
+  using TypeOf = uint8_t (*)(const EncounterRecord &rec);
+
+  explicit HistoryTally(TypeOf type_of) : type_of_(type_of) {}
+
+  // The log is empty.
+  void reset() {
+    encounters_ = battery_ = oldest_utc_ = newest_boot_ = 0;
+    devices_.reset();
+    scanning_ = restart_ = unavailable_ = false;
+    counts_exact_ = true;
+  }
+
+  // A record was written to the log.
+  void added(const uint8_t *record) {
+    RecordHeader h;
+    memcpy(&h, record, sizeof(h));
+    if (h.boot > newest_boot_) newest_boot_ = h.boot;
+    uint32_t utc = 0;
+    if (record_type(record) == kTypeEncounter) {
+      EncounterRecord e;
+      memcpy(&e, record, sizeof(e));
+      encounters_++;
+      if (scanning_) since_encounters_++;
+      devices_.add(type_of_(e), e.mac);
+      utc = e.first.utc;
+    } else if (record_type(record) == kTypeBattery) {
+      BatteryRecord b;
+      memcpy(&b, record, sizeof(b));
+      battery_++;
+      if (scanning_) since_battery_++;
+      utc = b.utc;
+    }
+    note_oldest(&oldest_utc_, utc);
+    if (scanning_) note_oldest(&scan_oldest_, utc);
+  }
+
+  // Records left the log (RecordLog's eviction hook). An uncertain eviction
+  // leaves the counts unknown until a rescan has read the log again.
+  void evicted(const RecordLog::Eviction &e) {
+    if (e.known) {
+      encounters_ -= e.encounters < encounters_ ? e.encounters : encounters_;
+      battery_ -= e.battery < battery_ ? e.battery : battery_;
+    } else {
+      counts_exact_ = false;
+    }
+    restart_ = true;
+  }
+
+  // Rebuilds everything from the log (at mount, after a failed clear, or to
+  // retry after a read failure).
+  void rescan() { restart_ = true; }
+
+  // True when step() has work: a rescan running or requested. After a read
+  // failure this stays false until something requests a rescan, so a
+  // persistent failure does not keep the caller busy.
+  bool wants_step() const { return scanning_ || restart_; }
+
+  // Scans up to `sectors` sectors of a pending rescan. True when none is
+  // pending. A sector that cannot be read leaves the tally unavailable
+  // until the next rescan.
+  bool step(RecordLog &log, size_t sectors) {
+    if (restart_) begin(log);
+    for (size_t n = 0; scanning_ && n < sectors; n++) {
+      const bool read = log.for_each_in_sector(next_sector_, [&](const uint8_t *rec) {
+        RecordHeader h;
+        memcpy(&h, rec, sizeof(h));
+        if (h.seq >= boundary_) return;  // written during the rescan: already counted
+        if (h.boot > newest_boot_) newest_boot_ = h.boot;
+        if (record_type(rec) == kTypeEncounter) {
+          EncounterRecord e;
+          memcpy(&e, rec, sizeof(e));
+          scan_encounters_++;
+          devices_.add(type_of_(e), e.mac);
+          note_oldest(&scan_oldest_, e.first.utc);
+        } else if (record_type(rec) == kTypeBattery) {
+          BatteryRecord b;
+          memcpy(&b, rec, sizeof(b));
+          scan_battery_++;
+          note_oldest(&scan_oldest_, b.utc);
+        }
+      });
+      if (!read) {
+        scanning_ = false;
+        unavailable_ = true;
+        return true;
+      }
+      if (++next_sector_ == log.sectors()) {
+        scanning_ = false;
+        encounters_ = scan_encounters_ + since_encounters_;
+        battery_ = scan_battery_ + since_battery_;
+        oldest_utc_ = scan_oldest_;
+        counts_exact_ = true;
+      }
+    }
+    return !scanning_;
+  }
+
+  // Distinct devices and the oldest timestamp are not current.
+  bool pending() const { return scanning_ || restart_ || unavailable_; }
+  // A rescan failed to read the log.
+  bool unavailable() const { return unavailable_; }
+  // The record counts match the log (false after an uncertain eviction until
+  // a rescan completes).
+  bool counts_exact() const { return counts_exact_; }
+
+  uint32_t encounters() const { return encounters_; }
+  uint32_t battery() const { return battery_; }
+  uint32_t oldest_utc() const { return oldest_utc_; }  // 0 = none; see pending()
+  uint32_t newest_boot() const { return newest_boot_; }
+  const DistinctCounter<Capacity> &devices() const { return devices_; }  // see pending()
+
+ private:
+  static void note_oldest(uint32_t *oldest, uint32_t utc) {
+    if (utc && (*oldest == 0 || utc < *oldest)) *oldest = utc;
+  }
+
+  void begin(RecordLog &log) {
+    restart_ = unavailable_ = false;
+    scanning_ = log.sectors() > 0;
+    boundary_ = log.next_seq();
+    next_sector_ = 0;
+    scan_encounters_ = scan_battery_ = scan_oldest_ = 0;
+    since_encounters_ = since_battery_ = 0;
+    newest_boot_ = 0;  // rebuilt from the scan and from records added meanwhile
+    devices_.reset();
+    if (!scanning_) encounters_ = battery_ = oldest_utc_ = 0;
+  }
+
+  TypeOf type_of_;
+  uint32_t encounters_ = 0;
+  uint32_t battery_ = 0;
+  uint32_t oldest_utc_ = 0;
+  uint32_t newest_boot_ = 0;
+  DistinctCounter<Capacity> devices_;
+
+  bool scanning_ = false;
+  bool restart_ = false;
+  bool unavailable_ = false;
+  bool counts_exact_ = true;
+  uint32_t boundary_ = 0;  // records from this seq on were counted on arrival
+  size_t next_sector_ = 0;
+  uint32_t scan_encounters_ = 0;
+  uint32_t scan_battery_ = 0;
+  uint32_t scan_oldest_ = 0;
+  uint32_t since_encounters_ = 0;
+  uint32_t since_battery_ = 0;
 };
 
 }  // namespace fy::store

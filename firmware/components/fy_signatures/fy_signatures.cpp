@@ -489,7 +489,6 @@ bool signature_is_primary(const char *sig) { return strcmp(sig, kPrimaryIeSignat
 // field research). Matched anchored, case-insensitively, with a tail of four
 // or more hex digits and nothing else, so "Flock-Party" never matches.
 
-constexpr uint8_t kSubtypeProbeRequest = 4;
 constexpr uint8_t kSubtypeProbeResponse = 5;
 constexpr uint8_t kSubtypeBeacon = 8;
 constexpr size_t kBeaconFixedLen = 12;  // timestamp, interval, capability
@@ -521,18 +520,17 @@ bool prefix_hex_tail(const char *text, size_t len, const char *prefix_lower, siz
   return true;
 }
 
-// The SSID element of a beacon, probe response, or probe request, or false.
+// The SSID a network announces about itself: the SSID element of a beacon or
+// probe response, whose transmitter is the access point. A probe request
+// names a network the client is looking for, which says nothing about the
+// client, so it gives none.
 bool frame_ssid(const uint8_t *frame, size_t len, const uint8_t **ssid, size_t *ssid_len) {
   if (len < kMacHeaderLen) return false;
   const uint8_t fc0 = frame[0];
   if (((fc0 >> 2) & 0x03) != 0) return false;  // not management
   const uint8_t subtype = (fc0 >> 4) & 0x0f;
-  size_t pos = kMacHeaderLen;
-  if (subtype == kSubtypeBeacon || subtype == kSubtypeProbeResponse) {
-    pos += kBeaconFixedLen;
-  } else if (subtype != kSubtypeProbeRequest) {
-    return false;
-  }
+  if (subtype != kSubtypeBeacon && subtype != kSubtypeProbeResponse) return false;
+  const size_t pos = kMacHeaderLen + kBeaconFixedLen;
   if (pos + 2 > len || frame[pos] != kIeSsid) return false;
   const size_t n = frame[pos + 1];
   if (n > 32 || pos + 2 + n > len) return false;
@@ -985,7 +983,7 @@ size_t match_wifi_frame(const uint8_t *frame, size_t len, bool is_mgmt, Match *o
     }
   }
 
-  // A Flock SoftAP name in a beacon, probe response, or probe request.
+  // A Flock SoftAP name announced by the access point itself.
   const uint8_t *ssid;
   size_t ssid_len;
   if (is_mgmt && frame_ssid(frame, len, &ssid, &ssid_len) && flock_ssid(ssid, ssid_len)) {

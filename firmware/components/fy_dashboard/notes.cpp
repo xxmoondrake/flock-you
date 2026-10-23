@@ -70,6 +70,13 @@ const Note *Notes::find(const uint8_t mac[6]) const {
   return nullptr;
 }
 
+Note Notes::current(const uint8_t mac[6]) const {
+  if (const Note *n = find(mac)) return *n;
+  Note empty = {};
+  memcpy(empty.mac, mac, sizeof(empty.mac));
+  return empty;
+}
+
 bool Notes::set(const Note &note) {
   for (size_t i = 0; i < count_; i++) {
     if (memcmp(notes_[i].mac, note.mac, 6) != 0) continue;
@@ -129,6 +136,18 @@ bool Notes::deserialize(const uint8_t *in, size_t len) {
     }
   }
   return true;
+}
+
+NoteSaveResult save_note(Notes &notes, const Note &note, StoreNotes store, void *ctx,
+                         bool *restored) {
+  if (restored) *restored = true;
+  const Note before = notes.current(note.mac);
+  if (!notes.set(note)) return NoteSaveResult::Full;
+  if (store(notes, ctx)) return NoteSaveResult::Saved;
+  notes.set(before);
+  const bool again = store(notes, ctx);
+  if (restored) *restored = again;
+  return NoteSaveResult::NotSaved;
 }
 
 size_t note_json(const Note &n, char *out, size_t cap) {

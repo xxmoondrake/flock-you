@@ -40,6 +40,20 @@ static const char *TAG = "usb";
 #define FY_TOUCH_BAUD 1200
 #define FY_TX_TIMEOUT_MS 100
 
+// Start stages, recorded as each completes so that a failed start, or a stop,
+// undoes exactly what was done, in reverse order.
+enum {
+    STAGE_DRIVER = 1u << 0,
+    STAGE_CDC = 1u << 1,
+    STAGE_CONSOLE = 1u << 2,
+    STAGE_NET = 1u << 3,
+    STAGE_NETIF = 1u << 4,     // the interface exists
+    STAGE_NETIF_UP = 1u << 5,  // ...and was started
+    STAGE_PAGE = 1u << 6,      // holds a share of the dashboard server
+};
+static unsigned s_stages;
+static bool s_running;  // every stage completed
+
 static esp_netif_t *s_netif;
 static volatile bool s_touch_baud;  // the host set the line to 1200 baud
 
@@ -103,6 +117,7 @@ static esp_err_t start_netif(const uint8_t device_mac[6])
     };
     s_netif = esp_netif_new(&cfg);
     if (!s_netif) return ESP_ERR_NO_MEM;
+    s_stages |= STAGE_NETIF;
     ESP_RETURN_ON_ERROR(esp_netif_set_mac(s_netif, (uint8_t *)device_mac), TAG, "set_mac");
 
     // Offer an address only: no gateway and no DNS, so the host does not
@@ -118,6 +133,7 @@ static esp_err_t start_netif(const uint8_t device_mac[6])
     // The captive portal (the default) offers both after all.
     ESP_RETURN_ON_ERROR(fy_dashboard_portal_dhcp(s_netif), TAG, "portal dhcp");
     esp_netif_action_start(s_netif, NULL, 0, NULL);
+    s_stages |= STAGE_NETIF_UP;
     esp_netif_action_connected(s_netif, NULL, 0, NULL);
     return ESP_OK;
 }
@@ -153,43 +169,7 @@ static void on_line_state(int itf, cdcacm_event_t *event)
     }
 }
 
-// ---- Start -------------------------------------------------------------------------
-
-esp_err_t fy_usb_start(void)
-{
-    if (s_netif) return ESP_OK;
-
-    uint8_t device_mac[6];
-    uint8_t host_mac[6];
-    ESP_RETURN_ON_ERROR(esp_read_mac(device_mac, ESP_MAC_ETH), TAG, "read_mac");
-    // The host's side of the link needs its own address: a locally
-    // administered one derived from the device's.
-    ESP_RETURN_ON_ERROR(esp_derive_local_mac(host_mac, device_mac), TAG, "derive_mac");
-
-    const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
-    ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "driver_install");
-
-    const tinyusb_config_cdcacm_t acm = {
-        .cdc_port = TINYUSB_CDC_ACM_0,
-        .callback_line_state_changed = on_line_state,
-        .callback_line_coding_changed = on_line_coding,
-    };
-    ESP_RETURN_ON_ERROR(tinyusb_cdcacm_init(&acm), TAG, "cdcacm_init");
-    ESP_RETURN_ON_ERROR(tinyusb_console_init(TINYUSB_CDC_ACM_0), TAG, "console_init");
-
-    tinyusb_net_config_t net = {
-        .on_recv_callback = usb_receive,
-    };
-    memcpy(net.mac_addr, host_mac, sizeof(net.mac_addr));
-    ESP_RETURN_ON_ERROR(tinyusb_net_init(&net), TAG, "net_init");
-    ESP_RETURN_ON_ERROR(start_netif(device_mac), TAG, "netif");
-    ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "dashboard");
-
-    ESP_LOGI(TAG, "USB console and network up; dashboard http://" FY_USB_ADDRESS "/");
-    return ESP_OK;
-}
-
-// ---- Stop -----------------------------------------------------------------------------
+// ---- Teardown --------------------------------------------------------------------------
 
 // tinyusb_console_deinit() reopens the standard streams on /dev/uart/<n>,
 // which does not exist when USB Serial/JTAG is the primary console: the
@@ -203,23 +183,88 @@ static void restore_console(void)
     esp_vfs_tusb_cdc_unregister(NULL);
 }
 
+// Undoes every completed start stage, newest first, from any partial state.
+static void teardown(void)
+{
+    if (s_stages & STAGE_PAGE) fy_dashboard_page_stop();
+    if (s_stages & STAGE_NETIF) {
+        // Received frames are dropped from here on, and removing the
+        // interface stops lwIP transmitting before the USB stack goes away.
+        esp_netif_t *netif = s_netif;
+        s_netif = NULL;
+        if (s_stages & STAGE_NETIF_UP) esp_netif_action_stop(netif, NULL, 0, NULL);
+        esp_netif_destroy(netif);
+    }
+    if (s_stages & STAGE_CONSOLE) restore_console();  // stdout back to USB Serial/JTAG
+    if (s_stages & STAGE_CDC) tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
+    if (s_stages & STAGE_NET) tinyusb_net_deinit();
+    if (s_stages & STAGE_DRIVER) {
+        tinyusb_driver_uninstall();
+        usb_serial_jtag_ll_phy_enable_external(false);
+    }
+    s_stages = 0;
+    s_running = false;
+    s_touch_baud = false;
+}
+
+// ---- Start -------------------------------------------------------------------------
+
+static esp_err_t start_stages(void)
+{
+    uint8_t device_mac[6];
+    uint8_t host_mac[6];
+    ESP_RETURN_ON_ERROR(esp_read_mac(device_mac, ESP_MAC_ETH), TAG, "read_mac");
+    // The host's side of the link needs its own address: a locally
+    // administered one derived from the device's.
+    ESP_RETURN_ON_ERROR(esp_derive_local_mac(host_mac, device_mac), TAG, "derive_mac");
+
+    const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
+    ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "driver_install");
+    s_stages |= STAGE_DRIVER;
+
+    const tinyusb_config_cdcacm_t acm = {
+        .cdc_port = TINYUSB_CDC_ACM_0,
+        .callback_line_state_changed = on_line_state,
+        .callback_line_coding_changed = on_line_coding,
+    };
+    ESP_RETURN_ON_ERROR(tinyusb_cdcacm_init(&acm), TAG, "cdcacm_init");
+    s_stages |= STAGE_CDC;
+    ESP_RETURN_ON_ERROR(tinyusb_console_init(TINYUSB_CDC_ACM_0), TAG, "console_init");
+    s_stages |= STAGE_CONSOLE;
+
+    tinyusb_net_config_t net = {
+        .on_recv_callback = usb_receive,
+    };
+    memcpy(net.mac_addr, host_mac, sizeof(net.mac_addr));
+    ESP_RETURN_ON_ERROR(tinyusb_net_init(&net), TAG, "net_init");
+    s_stages |= STAGE_NET;
+    ESP_RETURN_ON_ERROR(start_netif(device_mac), TAG, "netif");
+    ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "dashboard");
+    s_stages |= STAGE_PAGE;
+    return ESP_OK;
+}
+
+esp_err_t fy_usb_start(void)
+{
+    if (s_running) return ESP_OK;
+    const esp_err_t err = start_stages();
+    if (err != ESP_OK) {
+        teardown();  // leaves nothing behind, so a later start can retry
+        ESP_LOGE(TAG, "USB dashboard start failed (%s); undone", esp_err_to_name(err));
+        return err;
+    }
+    s_running = true;
+    ESP_LOGI(TAG, "USB console and network up; dashboard http://" FY_USB_ADDRESS "/");
+    return ESP_OK;
+}
+
+// ---- Stop -----------------------------------------------------------------------------
+
 void fy_usb_stop(void)
 {
-    esp_netif_t *netif = s_netif;
-    if (!netif) return;
+    if (!s_running) return;
     ESP_LOGI(TAG, "stopping USB dashboard");
-    fy_dashboard_page_stop();
-    // Received frames are dropped from here on, and removing the interface
-    // stops lwIP transmitting before the USB stack goes away.
-    s_netif = NULL;
-    esp_netif_action_stop(netif, NULL, 0, NULL);
-    esp_netif_destroy(netif);
-    restore_console();  // stdout back to USB Serial/JTAG
-    tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
-    tinyusb_net_deinit();
-    tinyusb_driver_uninstall();
-    usb_serial_jtag_ll_phy_enable_external(false);
-    s_touch_baud = false;
+    teardown();
     ESP_LOGI(TAG, "USB dashboard stopped; console back on USB Serial/JTAG");
 }
 

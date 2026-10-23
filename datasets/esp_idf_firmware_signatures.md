@@ -37,7 +37,7 @@ Wi-Fi OUI rules take the matched vendor's label; the others have a fixed one. Th
 | `wifi_oui_addr2` | Watchlist OUI as transmitter, any frame | Vendor's | IEEE registry | `wifi_oui_addr2` (2) |
 | `wifi_oui_addr1` | Watchlist OUI as receiver | Vendor's | IEEE registry | `wifi_oui_addr1` (1) |
 | `wifi_oui_addr3` | Watchlist OUI as BSSID of a management frame | Vendor's | IEEE registry | `wifi_oui_addr3` (1) |
-| `wifi_ssid_flock` | SSID `Flock-` plus 4 or more hex digits in a beacon, probe response, or probe request | Specific | Firmware dump (`WifiApService`); ryanohoro; GainSec | `wifi_ssid` (3) |
+| `wifi_ssid_flock` | SSID `Flock-` plus 4 or more hex digits in a beacon or probe response (a client's probe request for the network names no device) | Specific | Firmware dump (`WifiApService`); ryanohoro; GainSec | `wifi_ssid` (3) |
 | `ble_name_penguin` | Name `Penguin-` followed by exactly 10 digits | Specific | Firmware dump; ryanohoro | `ble_name` (2) |
 | `ble_name_fs_ext_battery` | Name `FS Ext Battery` | Specific | Firmware dump; ryanohoro | `ble_name` (2) |
 | `ble_name_fs_hex` | Name `FS-` followed by 4 or more hex digits | Possible | all-cameras-are-beacons field capture (`FS-BEC46A`); generic white-label prefix | `ble_name` (2) |

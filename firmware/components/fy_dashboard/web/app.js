@@ -111,6 +111,13 @@
     selected: null,
     busy: false,
     seq: null,  // where the next update starts (X-FY-Next-Seq)
+    // The device history the events belong to ("boot-clears", X-FY-History).
+    // When the device reports another one (an erase or a reboot), the events
+    // are dropped and loaded again; until then the page holds none.
+    history: null,
+    stale: false,
+    generation: 0,  // responses to requests from an older generation are ignored
+    oldestSeq: 0,   // events last updated before this record have left the log
   };
 
   const LABELS = { confirmed: 'Confirmed', false_positive: 'False positive' };
@@ -452,36 +459,92 @@
     else if (state.selected) closeDetail();
   }
 
-  async function load() {
+  // Loads every stored detection. Opening the page and Refresh count as the
+  // owner using the dashboard; the page's own reloads (a retry, or after an
+  // erase or reboot) are background requests.
+  async function load({ background = false } = {}) {
     if (state.busy) return;
     state.busy = true;
+    const generation = state.generation;
     $('#summary').textContent = 'Loading detections…';
     try {
-      const [r, notes] = await Promise.all([request('/api/detections'), api('/api/notes')]);
+      const [r, notes] = await Promise.all([
+        request('/api/detections', { background }), api('/api/notes', { background })]);
       const list = await r.json();
+      if (generation !== state.generation) return;  // overtaken by an invalidation
       state.events = new Map();
       mergeEvents(list);
       state.notes = new Map(notes.map((n) => [n.mac, n]));
       state.seq = Number(r.headers.get('X-FY-Next-Seq')) || 0;
+      state.history = r.headers.get('X-FY-History');
+      state.oldestSeq = Number(r.headers.get('X-FY-Oldest-Seq')) || 0;
+      state.stale = false;
       redraw({ refit: true, rebuildDetail: true });
       renderIgnored();
     } catch (err) {
-      $('#summary').textContent = `Could not load detections: ${err.message}`;
+      // Includes a response the device cut short because records left its
+      // log meanwhile. Retried at the next check.
+      if (generation === state.generation) state.stale = true;
+      $('#summary').textContent = `Could not load detections (${err.message}). Trying again…`;
     } finally {
       state.busy = false;
     }
+  }
+
+  // The device's history changed (an erase or a reboot): nothing loaded
+  // before may be shown or exported as current, so it is dropped at once and
+  // loaded again; responses still in flight are ignored.
+  function invalidate() {
+    state.generation++;
+    state.stale = true;
+    state.seq = null;
+    state.history = null;
+    state.events = new Map();
+    redraw();
+    closeDetail();
+    $('#summary').textContent = 'The detector\'s stored history changed. Loading it again…';
+  }
+
+  // Drops events whose newest snapshot has left the log as it wrapped.
+  function prune(oldestSeq) {
+    if (!oldestSeq || oldestSeq <= state.oldestSeq) return;
+    state.oldestSeq = oldestSeq;
+    let removed = 0;
+    for (const [key, e] of state.events) {
+      if (e.seq < oldestSeq) {
+        state.events.delete(key);
+        removed++;
+      }
+    }
+    if (removed) redraw();
   }
 
   // Fetches the encounters written since the last load or update.
   async function update() {
     if (state.busy) return;
     state.busy = true;
+    const generation = state.generation;
     try {
-      const r = await request(`/api/detections?since=${state.seq}`, { background: true });
-      const list = await r.json();
+      let r;
+      let list;
+      try {
+        r = await request(`/api/detections?since=${state.seq}`, { background: true });
+        list = await r.json();
+      } catch {
+        // Cut short (records left the log meanwhile) or lost: load everything
+        // again at the next check rather than merge a partial answer.
+        if (generation === state.generation) state.stale = true;
+        return;
+      }
+      if (generation !== state.generation) return;
+      if (r.headers.get('X-FY-History') !== state.history) {
+        invalidate();  // erased or rebooted between polls
+        return;
+      }
       state.seq = Number(r.headers.get('X-FY-Next-Seq')) || state.seq;
       const changed = mergeEvents(list);
       if (list.length) redraw();
+      prune(Number(r.headers.get('X-FY-Oldest-Seq')) || 0);
       announce(changed);
     } finally {
       state.busy = false;
@@ -598,6 +661,10 @@
 
   function downloadGpx() {
     const note = $('#gpx-note');
+    if (state.stale) {
+      note.textContent = 'The detections are being loaded again from the detector. Try again in a moment.';
+      return;
+    }
     const rows = $('#export-ignored').checked ? state.rows : state.rows.filter((r) => !isIgnored(r));
     const placed = rows.filter((r) => r.pos).length;
     if (!placed) {
@@ -632,11 +699,20 @@
 
   // ---- Status and live updates ----------------------------------------------
 
+  // What the detector is actually doing, from its own capture state.
+  function detectionText(s) {
+    const c = s.capture;
+    if (!c) return s.detection_paused ? 'Paused while the Wi-Fi dashboard is on' : 'Running';
+    if (c.wifi && c.ble) return 'Running (Wi-Fi and Bluetooth)';
+    if (c.wifi || c.ble) return c.wifi ? 'Wi-Fi only (Bluetooth stopped)' : 'Bluetooth only (Wi-Fi stopped)';
+    return s.detection_paused ? 'Paused while the Wi-Fi dashboard is on' : 'Stopped (standby, or capture did not start)';
+  }
+
   function renderStatus(s) {
     const rows = [
       ['Board', s.board],
       ['Dashboard', s.dashboard === 'wifi' ? `Wi-Fi (ends after ${s.idle_minutes} min without use)` : 'USB'],
-      ['Detection', s.detection_paused ? 'Paused while the Wi-Fi dashboard is on' : 'Running'],
+      ['Detection', detectionText(s)],
       ['Battery', s.battery ? `${s.battery.percent}% (${(s.battery.mv / 1000).toFixed(2)} V)` : 'Not measured'],
       ['GPS', !s.gps ? 'None' : s.gps.fix
         ? `${s.gps.fix_type === 3 ? '3D' : '2D'} fix, ${s.gps.satellites} satellites` : 'No fix'],
@@ -673,10 +749,15 @@
       $('#offline').hidden = true;
       if (!$('#view-device').hidden) renderStatus(s);
       if (s.phone && !s.phone.time) sendPhoneTime();
-      if (state.seq !== null && s.record_seq !== undefined && s.record_seq !== state.seq) {
-        if (s.record_seq < state.seq) await load();  // the log was replaced
+      const h = s.history;
+      if (h && state.history !== null && `${h.boot}-${h.clears}` !== state.history) invalidate();
+      if (state.stale) {
+        await load({ background: true });  // one at a time; a failed one is retried next poll
+      } else if (state.seq !== null && s.record_seq !== undefined && s.record_seq !== state.seq) {
+        if (s.record_seq < state.seq) await load({ background: true });  // the log was replaced
         else await update();
       }
+      if (h && !state.stale) prune(h.oldest_seq);
     } catch {
       $('#offline').hidden = false;
     } finally {
@@ -1086,7 +1167,7 @@
     setPref('showIgnored', showIgnored.checked);
     redraw();
   });
-  $('#refresh').addEventListener('click', load);
+  $('#refresh').addEventListener('click', () => load());
   $('#more').addEventListener('click', () => renderList(false));
   const track = $('#track');
   track.checked = map.showTrack;

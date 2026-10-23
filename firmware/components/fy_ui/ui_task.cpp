@@ -20,6 +20,7 @@
 #include "fy_gps.h"
 #include "fy_recorder.h"
 #include "fy_signatures.h"
+#include "fy_store.h"
 #include "fy_ui_controller.h"
 #include "fy_ui_layout.h"
 #include "fy_usb.h"
@@ -38,6 +39,7 @@ constexpr int kDebouncePolls = 2;
 // How long a specific match keeps the alert banner on screen.
 constexpr uint32_t kAlertMs = 10000;
 constexpr uint32_t kPowerOffSaveTimeoutMs = 2000;
+constexpr uint32_t kSaveFailedNoticeMs = 1500;  // shown before powering off anyway
 constexpr uint32_t kLowBatteryNoticeMs = 3000;
 
 fy::display::Canvas canvas;
@@ -72,6 +74,7 @@ void gather_detections(UiModel &m, const fy_recorder_status &r) {
     m.detections[i] = row;
   }
   m.counts_saturated = r.session_saturated || r.stored_saturated;
+  m.stored_pending = r.stored_pending;
 }
 
 void gather(UiModel &m, bool power_off_armed) {
@@ -165,13 +168,25 @@ void draw(bool power_off_armed) {
   fy_board_display_flush(canvas.frame());
 }
 
+// Saves open encounters before power-off, within a fixed time. A failed or
+// unconfirmed save is logged and shown briefly; power-off goes ahead.
+void save_before_power_off() {
+  const fy_recorder_save_result result = fy_recorder_save_and_wait(kPowerOffSaveTimeoutMs);
+  if (result == FY_RECORDER_SAVED) return;
+  const bool failed = result == FY_RECORDER_SAVE_FAILED;
+  ESP_LOGW(TAG, "%s before power-off",
+           failed ? "saving open encounters failed" : "open encounters not confirmed saved");
+  canvas.clear();
+  canvas.draw_text(0, 28, failed ? "Save failed" : "Save not confirmed");
+  fy_board_display_flush(canvas.frame());
+  vTaskDelay(pdMS_TO_TICKS(kSaveFailedNoticeMs));
+}
+
 [[noreturn]] void power_off() {
   canvas.clear();
   canvas.draw_text(0, 28, "Saving, powering off");
   fy_board_display_flush(canvas.frame());
-  if (!fy_recorder_save_and_wait(kPowerOffSaveTimeoutMs)) {
-    ESP_LOGW(TAG, "open encounters not confirmed saved before power-off");
-  }
+  save_before_power_off();
   fy_board_power_off();
 }
 
@@ -191,7 +206,7 @@ void ui_task(void *) {
       fy::ui::render_low_battery(canvas, low_battery_mv, false);
       fy_board_display_flush(canvas.frame());
       vTaskDelay(pdMS_TO_TICKS(kLowBatteryNoticeMs));
-      fy_recorder_save_and_wait(kPowerOffSaveTimeoutMs);
+      save_before_power_off();
       fy_board_power_off(CONFIG_FY_BATTERY_RECHECK_S);
     }
 
@@ -238,11 +253,8 @@ void ui_task(void *) {
           fy::ui::show_message(state, "WiFi dashboard on", now);
         }
         if (action == Action::SaveOpen) {
-          fy_recorder_status r;
-          fy_recorder_get_status(&r);
-          save_marker = r.saves_completed;
+          save_marker = fy_recorder_request_save();
           save_pending = true;
-          fy_recorder_request_save();
           fy::ui::show_message(state, "Saving encounters", now);
         }
         if (action == Action::EraseAll) fy_recorder_request_erase();
@@ -261,13 +273,13 @@ void ui_task(void *) {
     // Completion notices for requested actions.
     fy_recorder_status r;
     fy_recorder_get_status(&r);
-    if (save_pending && r.saves_completed != save_marker) {
+    if (save_pending && fy::store::SaveLedger::answers(r.save_answered, save_marker)) {
       save_pending = false;
-      fy::ui::show_message(state, "Encounters saved", now);
+      fy::ui::show_message(state, r.last_save_ok ? "Encounters saved" : "Save failed", now);
       redraw = true;
     }
     if (was_erasing && !r.erasing) {
-      fy::ui::show_message(state, r.write_errors ? "Erase had errors" : "Records erased", now);
+      fy::ui::show_message(state, r.last_erase_ok ? "Records erased" : "Erase had errors", now);
       redraw = true;
     }
     if (r.erasing) redraw = redraw || now - last_draw >= 200;

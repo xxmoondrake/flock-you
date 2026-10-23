@@ -233,7 +233,7 @@ void render_home(Canvas &c, const UiModel &m) {
   // Row 1: capture state. Standby and the dashboard are shown inverted so the
   // screen never implies detection that is not running.
   if (m.dashboard_active && !m.dashboard_usb) {
-    line(c, 1, "DASHBOARD ON, NO SCAN", true);
+    line(c, 1, "PAUSED FOR DASHBOARD", true);
   } else if (m.standby) {
     line(c, 1, "STANDBY: NOT SCANNING", true);
   } else {
@@ -284,7 +284,11 @@ void render_home(Canvas &c, const UiModel &m) {
 void render_detections(Canvas &c, const UiModel &m) {
   c.clear();
   // Column headings sit in the title bar: name (12) | session (3) | stored (4).
-  title(c, m.counts_saturated ? "DETECTIONS+  ses  all" : "DETECTIONS   ses  all");
+  // + lower bounds, ~ stored counts being recounted.
+  char heading[24];
+  snprintf(heading, sizeof(heading), "DETECTIONS%c%c ses  all", m.counts_saturated ? '+' : ' ',
+           m.stored_pending ? '~' : ' ');
+  title(c, heading);
   if (m.detection_rows == 0) {
     text_at(c, kListY[1], "No detections yet");
     return;
@@ -334,7 +338,13 @@ void render_device(Canvas &c, const UiModel &m) {
   c.clear();
   title(c, "DEVICE MANAGEMENT");
   char buf[96];
-  snprintf(buf, sizeof(buf), "Mode: %s", m.standby ? "Standby" : "Scanning");
+  const char *mode = m.standby ? "Standby" : "Scanning";
+  // A Wi-Fi session pauses detection; the selected mode resumes when it ends.
+  if (m.dashboard_active && !m.dashboard_usb) {
+    snprintf(buf, sizeof(buf), "Paused, then %s", mode);
+  } else {
+    snprintf(buf, sizeof(buf), "Mode: %s", mode);
+  }
   text_at(c, kListY[0], buf);
 
   const char *detecting = m.wifi_capture && m.ble_scan ? "Detecting WiFi + BLE"

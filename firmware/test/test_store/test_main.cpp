@@ -5,6 +5,7 @@
 #include <unity.h>
 
 #include <cstring>
+#include <deque>
 #include <vector>
 
 #include "fy_store.h"
@@ -20,25 +21,43 @@ class MemFlash : public Flash {
   size_t size() const override { return data_.size(); }
   bool read(size_t off, void *dst, size_t len) override {
     if (off + len > data_.size()) return false;
+    if (reads_left == 0) return false;
+    if (reads_left > 0) reads_left--;
     memcpy(dst, &data_[off], len);
     return true;
   }
+  // Write number `fail_write` (counting from 0) fails: not programmed at all,
+  // or only its first half when `torn` is set.
   bool write(size_t off, const void *src, size_t len) override {
     if (off + len > data_.size()) return false;
     const uint8_t *s = static_cast<const uint8_t *>(src);
-    for (size_t i = 0; i < len; i++) data_[off + i] &= s[i];
+    const bool fail = writes == fail_write || failing;
+    const size_t n = fail ? (torn ? len / 2 : 0) : len;
+    for (size_t i = 0; i < n; i++) data_[off + i] &= s[i];
     writes++;
-    return true;
+    return !fail;
   }
+  // While `erase_fails` is set, an erase fails after erasing only its first
+  // `partial_erase` bytes (0: nothing changes).
   bool erase_sector(size_t off) override {
     if (off % kSectorSize || off >= data_.size()) return false;
+    if (erase_fails) {
+      memset(&data_[off], 0xff, partial_erase);
+      return false;
+    }
     memset(&data_[off], 0xff, kSectorSize);
     erases++;
     return true;
   }
+  bool erase_fails = false;
+  size_t partial_erase = 0;
   std::vector<uint8_t> data_;
   int writes = 0;
   int erases = 0;
+  int fail_write = -1;
+  bool torn = false;
+  bool failing = false;  // every write fails while set
+  long reads_left = -1;  // reads fail once this reaches 0; -1 = never
 };
 
 BatteryRecord battery(uint32_t uptime_ms, uint16_t mv) {
@@ -73,11 +92,25 @@ Sighting sighting(uint8_t last_mac_byte, uint32_t t, int8_t rssi, uint8_t rank =
 }
 
 std::vector<EncounterRecord> emitted;
-void capture(EncounterRecord &rec, void *) { emitted.push_back(rec); }
+bool sink_fails = false;
+int fail_next_writes = 0;  // the next this many writes fail
+bool capture(EncounterRecord &rec, void *) {
+  if (fail_next_writes > 0) {
+    fail_next_writes--;
+    return false;
+  }
+  if (sink_fails) return false;
+  emitted.push_back(rec);
+  return true;
+}
 
 }  // namespace
 
-void setUp() { emitted.clear(); }
+void setUp() {
+  emitted.clear();
+  sink_fails = false;
+  fail_next_writes = 0;
+}
 void tearDown() {}
 
 // ---- Records ----------------------------------------------------------------------
@@ -499,8 +532,587 @@ void test_distinct_counter_saturates_safely() {
   TEST_ASSERT_EQUAL_UINT16(14, c.count(1));  // stops at 7/8 of capacity
 }
 
+// ---- Recovery after failed writes -------------------------------------------
+
+void test_failed_first_write_of_a_sector_keeps_later_records() {
+  MemFlash f(3);
+  {
+    RecordLog log(f);
+    log.mount();
+    for (size_t i = 0; i < kSlotsPerSector; i++) {
+      BatteryRecord r = battery(i, 3900);
+      log.append(&r);
+    }
+    f.fail_write = f.writes;  // the first write of sector 1 fails
+    BatteryRecord r = battery(100, 3900);
+    TEST_ASSERT_FALSE(log.append(&r));
+    for (int i = 0; i < 5; i++) {  // later slots of sector 1 succeed
+      BatteryRecord s = battery(101 + i, 3900);
+      TEST_ASSERT_TRUE(log.append(&s));
+    }
+    TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 5, log.used() - 1);  // the failed slot counts as used
+  }
+  RecordLog log(f);
+  TEST_ASSERT_TRUE(log.mount());
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 5, seqs(log).size());
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 7, log.next_seq());  // seq 33 failed, 34-38 written
+  BatteryRecord r = battery(200, 3800);
+  TEST_ASSERT_TRUE(log.append(&r));
+  // Appended after the later records, without erasing sector 1 again.
+  const std::vector<uint32_t> s = seqs(log);
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 6, s.size());
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 7, s.back());
+  TEST_ASSERT_EQUAL_UINT32(1, log.oldest_seq());
+}
+
+void test_failed_first_write_in_the_initial_sector() {
+  MemFlash f(2);
+  {
+    RecordLog log(f);
+    log.mount();
+    f.fail_write = 0;
+    f.torn = true;  // partly programmed
+    BatteryRecord r = battery(0, 3900);
+    TEST_ASSERT_FALSE(log.append(&r));
+    for (int i = 1; i <= 3; i++) {
+      BatteryRecord s = battery(i, 3900);
+      TEST_ASSERT_TRUE(log.append(&s));
+    }
+    TEST_ASSERT_EQUAL_UINT32(2, log.oldest_seq());
+  }
+  RecordLog log(f);
+  TEST_ASSERT_TRUE(log.mount());
+  TEST_ASSERT_EQUAL_UINT32(3, seqs(log).size());
+  TEST_ASSERT_EQUAL_UINT32(5, log.next_seq());
+  TEST_ASSERT_EQUAL_UINT32(2, log.oldest_seq());
+}
+
+void test_failed_first_write_after_wrap() {
+  MemFlash f(3);
+  {
+    RecordLog log(f);
+    log.mount();
+    for (size_t i = 0; i < 3 * kSlotsPerSector; i++) {
+      BatteryRecord r = battery(i, 3900);
+      log.append(&r);
+    }
+    f.fail_write = f.writes;  // wrapping into sector 0: its first write fails
+    BatteryRecord r = battery(500, 3900);
+    TEST_ASSERT_FALSE(log.append(&r));
+    for (int i = 0; i < 4; i++) {
+      BatteryRecord s = battery(501 + i, 3900);
+      TEST_ASSERT_TRUE(log.append(&s));
+    }
+  }
+  RecordLog log(f);
+  TEST_ASSERT_TRUE(log.mount());
+  const std::vector<uint32_t> s = seqs(log);
+  TEST_ASSERT_EQUAL_UINT32(2 * kSlotsPerSector + 4, s.size());
+  TEST_ASSERT_EQUAL_UINT32(3 * kSlotsPerSector + 5, s.back());  // the newest record survived
+  TEST_ASSERT_EQUAL_UINT32(3 * kSlotsPerSector + 6, log.next_seq());
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 1, log.oldest_seq());
+  BatteryRecord r = battery(600, 3800);
+  TEST_ASSERT_TRUE(log.append(&r));
+  TEST_ASSERT_EQUAL_UINT32(2 * kSlotsPerSector + 5, seqs(log).size());
+}
+
+void test_unreadable_flash_does_not_mount_as_empty() {
+  MemFlash f(3);
+  {
+    RecordLog log(f);
+    log.mount();
+    for (int i = 0; i < 40; i++) {
+      BatteryRecord r = battery(i, 3900);
+      log.append(&r);
+    }
+  }
+  // Reads: sectors 0 and 1 (one each), sector 2 (blank: four), then the head
+  // sector 1 (four).
+  // A tenth read that succeeds leaves the eleventh: the probe of the slot
+  // after the head's newest record.
+  for (long ok_reads : {0L, 1L, 2L, 5L, 7L, 10L}) {
+    f.reads_left = ok_reads;  // fails during the sector scan or the head scan
+    RecordLog log(f);
+    TEST_ASSERT_FALSE_MESSAGE(log.mount(), "a read failure must fail the mount");
+  }
+  f.reads_left = -1;
+  RecordLog log(f);
+  TEST_ASSERT_TRUE(log.mount());
+  TEST_ASSERT_EQUAL_UINT32(40, seqs(log).size());
+}
+
+// ---- Erase boundary -------------------------------------------------------------
+
+void test_tracker_discard_emits_nothing_and_keeps_numbering() {
+  TrackerConfig cfg;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  t.on_sighting(sighting(1, 0, -70));
+  t.on_sighting(sighting(1, 1000, -60));  // dirty
+  t.on_sighting(sighting(2, 1000, -60));
+  emitted.clear();
+  t.discard();
+  TEST_ASSERT_EQUAL_UINT32(0, t.active());
+  t.flush(2000);
+  t.tick(10 * 60000);
+  TEST_ASSERT_EQUAL_UINT32(0, emitted.size());  // nothing from before the discard
+  t.on_sighting(sighting(1, 3000, -50));
+  TEST_ASSERT_EQUAL_UINT32(1, emitted.size());
+  TEST_ASSERT_EQUAL_UINT32(3, emitted[0].encounter);  // numbers are not reused
+  TEST_ASSERT_EQUAL_UINT16(1, emitted[0].count);       // a fresh encounter
+}
+
+void test_ingest_gate() {
+  IngestGate g;
+  const uint32_t before = g.admit();
+  TEST_ASSERT_TRUE(before != 0);
+  g.close();
+  TEST_ASSERT_EQUAL_UINT32(0, g.admit());  // nothing admitted during the boundary
+  g.open();
+  const uint32_t after = g.admit();
+  TEST_ASSERT_TRUE(g.accept(after));
+  TEST_ASSERT_FALSE(g.accept(before));  // stamped before the boundary: stale
+  TEST_ASSERT_FALSE(g.accept(0));
+  TEST_ASSERT_EQUAL_UINT32(3, g.dropped());  // refused, stale, and unstamped
+}
+
+// The recorder's erase, step by step: two sightings queued before it, one
+// captured before it but queued only after the gate reopened, one refused
+// during it, and one new. Each turned-away sighting is counted exactly once.
+void test_erase_boundary_counts_each_discarded_sighting_once() {
+  IngestGate g;
+  std::deque<uint32_t> queue = {g.admit(), g.admit()};
+  const uint32_t delayed = g.admit();  // captured; its enqueue is delayed
+  g.close();
+  TEST_ASSERT_EQUAL_UINT32(0, g.admit());  // refused while erasing
+  while (!queue.empty()) {                 // emptied at the boundary
+    g.discarded();
+    queue.pop_front();
+  }
+  g.open();
+  queue.push_back(delayed);  // lands after the erase
+  queue.push_back(g.admit());
+  int taken = 0;
+  while (!queue.empty()) {
+    if (g.accept(queue.front())) taken++;
+    queue.pop_front();
+  }
+  TEST_ASSERT_EQUAL(1, taken);                // only the new one
+  TEST_ASSERT_EQUAL_UINT32(4, g.dropped());  // 2 discarded + 1 refused + 1 stale
+}
+
+// ---- Save acknowledgement --------------------------------------------------------
+
+void test_failed_writes_stay_pending_and_retry() {
+  TrackerConfig cfg;
+  cfg.checkpoint_ms = 10000;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  sink_fails = true;
+  t.on_sighting(sighting(1, 0, -70));  // the start write fails
+  TEST_ASSERT_FALSE(t.flush(100));
+  t.tick(5000);  // before the retry interval: no busy retrying
+  sink_fails = false;
+  t.tick(6000);
+  TEST_ASSERT_EQUAL_UINT32(0, emitted.size());
+  t.tick(10100);  // retried once the interval passed
+  TEST_ASSERT_EQUAL_UINT32(1, emitted.size());
+  TEST_ASSERT_TRUE(t.flush(10200));
+  TEST_ASSERT_EQUAL_UINT32(1, emitted.size());  // nothing left pending
+}
+
+void test_flush_reports_failure_and_keeps_changes() {
+  TrackerConfig cfg;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  t.on_sighting(sighting(1, 0, -70));
+  t.on_sighting(sighting(1, 1000, -60));
+  emitted.clear();
+  sink_fails = true;
+  TEST_ASSERT_FALSE(t.flush(1500));
+  sink_fails = false;
+  TEST_ASSERT_TRUE(t.flush(1600));  // the same changes, now persisted
+  TEST_ASSERT_EQUAL_UINT32(1, emitted.size());
+  TEST_ASSERT_EQUAL_UINT16(2, emitted[0].count);
+}
+
+void test_failed_close_keeps_the_encounter_until_written() {
+  TrackerConfig cfg;
+  cfg.absence_ms = 1000;
+  cfg.checkpoint_ms = 10000;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  t.on_sighting(sighting(1, 0, -70));
+  emitted.clear();
+  sink_fails = true;
+  t.tick(2000);  // closes; the final write fails
+  TEST_ASSERT_EQUAL_UINT32(1, t.active());
+  // The same device again starts a new encounter; the closing one keeps
+  // its own final state.
+  sink_fails = false;
+  t.on_sighting(sighting(1, 2500, -50));
+  TEST_ASSERT_EQUAL_UINT32(2, t.active());
+  TEST_ASSERT_EQUAL_UINT32(2, emitted.back().encounter);
+  TEST_ASSERT_TRUE(t.flush(3000));  // writes the pending final record
+  TEST_ASSERT_TRUE(emitted.back().h.flags & kFlagFinal);
+  TEST_ASSERT_EQUAL_UINT32(1, emitted.back().encounter);
+  TEST_ASSERT_EQUAL_UINT32(1, t.active());
+}
+
+void test_full_table_with_failing_writes_drops_and_counts() {
+  TrackerConfig cfg;
+  cfg.checkpoint_ms = 1000000;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  sink_fails = true;
+  for (size_t i = 0; i < EncounterTracker::kMaxActive + 10; i++) {
+    t.on_sighting(sighting(static_cast<uint8_t>(i), static_cast<uint32_t>(i) * 10, -70));
+  }
+  TEST_ASSERT_EQUAL_UINT32(EncounterTracker::kMaxActive, t.active());  // bounded
+  TEST_ASSERT_EQUAL_UINT32(10, t.dropped());
+  TEST_ASSERT_EQUAL_UINT32(0, emitted.size());
+}
+
+// ---- Retained-history statistics ------------------------------------------------
+
+uint8_t tally_type(const EncounterRecord &e) { return e.rule % 4; }
+
+EncounterRecord encounter_rec(uint8_t mac_last, uint8_t rule, uint32_t utc, uint32_t boot) {
+  EncounterRecord r = {};
+  r.h.type = kTypeEncounter;
+  r.h.boot = boot;
+  r.encounter = mac_last;
+  const uint8_t mac[6] = {0xb4, 0x1e, 0x52, 0, 0, mac_last};
+  memcpy(r.mac, mac, 6);
+  r.rule = rule;
+  r.first.utc = utc;
+  return r;
+}
+
+template <size_t N>
+void run_to_completion(HistoryTally<N> &t, RecordLog &log) {
+  for (int i = 0; i < 10000 && !t.step(log, 1); i++) {
+  }
+  TEST_ASSERT_FALSE(t.pending());
+}
+
+// A fresh tally of the same bytes, as at boot.
+template <size_t N>
+void assert_matches_fresh_scan(HistoryTally<N> &t, MemFlash &f) {
+  RecordLog fresh_log(f);
+  TEST_ASSERT_TRUE(fresh_log.mount());
+  static HistoryTally<N> fresh(tally_type);
+  fresh.reset();
+  fresh.rescan();
+  run_to_completion(fresh, fresh_log);
+  TEST_ASSERT_EQUAL_UINT32(fresh.encounters(), t.encounters());
+  TEST_ASSERT_EQUAL_UINT32(fresh.battery(), t.battery());
+  TEST_ASSERT_EQUAL_UINT32(fresh.oldest_utc(), t.oldest_utc());
+  TEST_ASSERT_EQUAL_UINT32(fresh.newest_boot(), t.newest_boot());
+  TEST_ASSERT_EQUAL(fresh.devices().saturated(), t.devices().saturated());
+  for (uint8_t type = 0; type < 4; type++) {
+    TEST_ASSERT_EQUAL_UINT16(fresh.devices().count(type), t.devices().count(type));
+  }
+}
+
+struct Wired {
+  MemFlash f;
+  RecordLog log;
+  HistoryTally<64> &tally;
+  Wired(size_t sectors, HistoryTally<64> &t) : f(sectors), log(f), tally(t) {
+    log.mount();
+    tally.reset();
+    log.set_eviction_hook([](const RecordLog::Eviction &e, void *ctx) {
+      static_cast<HistoryTally<64> *>(ctx)->evicted(e);
+    }, &tally);
+  }
+  template <typename R>
+  void write(R r) {
+    if (log.append(&r)) tally.added(reinterpret_cast<const uint8_t *>(&r));
+  }
+};
+
+void test_tally_follows_evictions() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(3, tally);
+  // Repeated devices, battery samples, and timestamps that rise and fall.
+  for (uint32_t i = 0; i < 5 * kSlotsPerSector; i++) {
+    if (i % 3 == 0) {
+      w.write(battery(i, 3900));
+    } else {
+      w.write(encounter_rec(static_cast<uint8_t>(i % 11), static_cast<uint8_t>(i % 5),
+                            1700000000 + (i * 7919) % 5000, 1 + i / 50));
+    }
+  }
+  TEST_ASSERT_TRUE(tally.pending());  // evictions happened
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+}
+
+void test_tally_counts_records_written_during_a_rescan() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(4, tally);
+  for (uint32_t i = 0; i < 2 * kSlotsPerSector; i++) {
+    w.write(encounter_rec(static_cast<uint8_t>(i % 9), 1, 1700000000 + i, 3));
+  }
+  tally.rescan();
+  TEST_ASSERT_FALSE(tally.step(w.log, 1));
+  for (uint32_t i = 0; i < 10; i++) {  // more records while the scan runs
+    w.write(encounter_rec(static_cast<uint8_t>(40 + i), 2, 1600000000 + i, 4));
+  }
+  w.write(battery(1, 3900));
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+  TEST_ASSERT_EQUAL_UINT32(1600000000, tally.oldest_utc());
+}
+
+void test_tally_restarts_when_an_eviction_interrupts_it() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(2, tally);
+  for (uint32_t i = 0; i < 2 * kSlotsPerSector; i++) {
+    w.write(encounter_rec(static_cast<uint8_t>(i), 1, 1700000000 + i, 1));
+  }
+  tally.rescan();
+  TEST_ASSERT_FALSE(tally.step(w.log, 1));
+  w.write(encounter_rec(200, 3, 1800000000, 2));  // evicts the oldest sector mid-scan
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+}
+
+void test_tally_saturation_matches_fresh_scan() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(4, tally);
+  for (uint32_t i = 0; i < 3 * kSlotsPerSector; i++) {  // more devices than the table holds
+    w.write(encounter_rec(static_cast<uint8_t>(i), 0, 1700000000, 1));
+  }
+  TEST_ASSERT_TRUE(tally.devices().saturated());
+  tally.rescan();
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+}
+
+void test_tally_clear_and_unreadable_log() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(2, tally);
+  w.write(encounter_rec(1, 1, 1700000000, 1));
+  TEST_ASSERT_TRUE(w.log.clear());
+  tally.reset();
+  TEST_ASSERT_EQUAL_UINT32(0, tally.encounters());
+  TEST_ASSERT_FALSE(tally.pending());
+  w.write(encounter_rec(2, 1, 1700000001, 1));
+  w.f.reads_left = 3;
+  tally.rescan();
+  TEST_ASSERT_TRUE(tally.step(w.log, 10));  // stops at the unreadable sector
+  TEST_ASSERT_TRUE(tally.unavailable());
+  TEST_ASSERT_TRUE(tally.pending());  // never presented as a complete tally
+  w.f.reads_left = -1;
+  tally.rescan();
+  run_to_completion(tally, w.log);
+  TEST_ASSERT_EQUAL_UINT32(1, tally.encounters());
+}
+
+// ---- Save contract -----------------------------------------------------------
+
+// The recorder's save, as recorder_task runs it: sightings queued before the
+// save are drained into the tracker, then everything pending is written. An
+// encounter given up while draining (its final write failed while the table
+// was full) fails the save even though every later write succeeds; the next
+// clean save succeeds.
+void test_save_reports_an_encounter_lost_while_draining() {
+  TrackerConfig cfg;
+  cfg.checkpoint_ms = 1000000;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  SaveLedger saves;
+  for (uint8_t i = 0; i < EncounterTracker::kMaxActive; i++) t.on_sighting(sighting(i, i * 10u, -70));
+  std::deque<Sighting> queue = {sighting(100, 1000, -60), sighting(101, 1010, -60)};
+  const auto drain = [&] {
+    while (!queue.empty()) {
+      t.on_sighting(queue.front());
+      queue.pop_front();
+    }
+  };
+  fail_next_writes = 1;  // the first eviction's final write
+  const uint32_t ticket = saves.request();
+  TEST_ASSERT_EQUAL_UINT32(ticket, saves.due());
+  TEST_ASSERT_FALSE(saves.run(ticket, t, 2000, drain));
+  TEST_ASSERT_EQUAL_UINT32(1, t.dropped());
+  TEST_ASSERT_TRUE(queue.empty());
+  TEST_ASSERT_EQUAL_UINT32(0, saves.due());
+  // Nothing lost since: a clean save succeeds.
+  const uint32_t next = saves.request();
+  TEST_ASSERT_TRUE(saves.run(next, t, 3000, [] {}));
+}
+
+// A request made while a save runs is not answered by it.
+void test_save_request_during_a_save_gets_the_next_one() {
+  TrackerConfig cfg;
+  EncounterTracker t(1, cfg, capture, nullptr);
+  SaveLedger saves;
+  const uint32_t first = saves.request();
+  uint32_t second = 0;
+  TEST_ASSERT_TRUE(saves.run(saves.due(), t, 100, [&] { second = saves.request(); }));
+  TEST_ASSERT_TRUE(SaveLedger::answers(first, first));
+  TEST_ASSERT_FALSE(SaveLedger::answers(first, second));  // published answer: `first`
+  TEST_ASSERT_EQUAL_UINT32(second, saves.due());           // another save is due
+  TEST_ASSERT_TRUE(saves.run(saves.due(), t, 200, [] {}));
+  TEST_ASSERT_TRUE(SaveLedger::answers(second, second));
+  TEST_ASSERT_EQUAL_UINT32(0, saves.due());
+}
+
+// ---- Eviction outcomes ---------------------------------------------------------
+
+// Fills a 3-sector ring exactly, so the next write erases sector 0 (records
+// 1-32), with encounters of repeated devices and battery samples.
+void fill_ring(Wired &w) {
+  for (uint32_t i = 0; i < 3 * kSlotsPerSector; i++) {
+    if (i % 4 == 0) {
+      w.write(battery(i, 3900));
+    } else {
+      w.write(encounter_rec(static_cast<uint8_t>(i % 13), static_cast<uint8_t>(i % 5),
+                            1700000000 + (i * 7919) % 5000, 1));
+    }
+  }
+}
+
+// The log's own view matches what a fresh mount finds in flash.
+void assert_log_matches_flash(RecordLog &log, MemFlash &f) {
+  RecordLog fresh(f);
+  TEST_ASSERT_TRUE(fresh.mount());
+  TEST_ASSERT_EQUAL_UINT32(fresh.oldest_seq(), log.oldest_seq());
+  TEST_ASSERT_EQUAL_UINT32(seqs(fresh).size(), seqs(log).size());
+}
+
+void test_failed_erase_without_change_keeps_records_counted() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(3, tally);
+  fill_ring(w);
+  run_to_completion(tally, w.log);
+  const uint32_t revision = w.log.revision();
+  w.f.erase_fails = true;  // fails without touching flash
+  w.write(encounter_rec(200, 1, 1800000000, 2));
+  TEST_ASSERT_EQUAL_UINT32(revision, w.log.revision());  // nothing left the log
+  TEST_ASSERT_EQUAL_UINT32(1, w.log.oldest_seq());       // browsers keep records 1-32
+  TEST_ASSERT_FALSE(tally.pending());
+  assert_matches_fresh_scan(tally, w.f);
+  assert_log_matches_flash(w.log, w.f);
+  // Retried once erases work again.
+  w.f.erase_fails = false;
+  w.write(encounter_rec(201, 1, 1800000001, 2));
+  TEST_ASSERT_EQUAL_UINT32(revision + 1, w.log.revision());
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 1, w.log.oldest_seq());
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+  assert_log_matches_flash(w.log, w.f);
+}
+
+void test_partly_completed_erase_is_reconciled_from_flash() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(3, tally);
+  fill_ring(w);
+  run_to_completion(tally, w.log);
+  const uint32_t revision = w.log.revision();
+  w.f.erase_fails = true;
+  w.f.partial_erase = kSectorSize / 2;  // records 1-16 are gone, 17-32 remain
+  w.write(encounter_rec(200, 1, 1800000000, 2));
+  TEST_ASSERT_EQUAL_UINT32(revision + 1, w.log.revision());  // records did leave
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector / 2 + 1, w.log.oldest_seq());
+  TEST_ASSERT_FALSE(tally.counts_exact());  // not published as exact meanwhile
+  TEST_ASSERT_TRUE(tally.pending());
+  run_to_completion(tally, w.log);
+  TEST_ASSERT_TRUE(tally.counts_exact());
+  assert_matches_fresh_scan(tally, w.f);
+  assert_log_matches_flash(w.log, w.f);
+  // Retry: the rest of the sector goes, counted exactly.
+  w.f.erase_fails = false;
+  w.f.partial_erase = 0;
+  w.write(encounter_rec(201, 1, 1800000001, 2));
+  TEST_ASSERT_EQUAL_UINT32(kSlotsPerSector + 1, w.log.oldest_seq());
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+  assert_log_matches_flash(w.log, w.f);
+}
+
+void test_unreadable_sector_before_eviction_is_reconciled() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(3, tally);
+  fill_ring(w);
+  run_to_completion(tally, w.log);
+  w.f.reads_left = 0;  // the sector cannot be counted before its erase
+  w.write(encounter_rec(200, 1, 1800000000, 2));
+  w.f.reads_left = -1;
+  TEST_ASSERT_FALSE(tally.counts_exact());
+  run_to_completion(tally, w.log);
+  assert_matches_fresh_scan(tally, w.f);
+  assert_log_matches_flash(w.log, w.f);
+}
+
+// ---- Tally recovery through the recorder's scheduling ---------------------------
+
+// Steps the tally the way recorder_task does: only while it wants a step.
+// Returns how many passes that took (bounded, to catch busy loops).
+int run_scheduled(HistoryTally<64> &t, RecordLog &log) {
+  int passes = 0;
+  while (t.wants_step() && passes < 1000) {
+    t.step(log, 4);
+    passes++;
+  }
+  return passes;
+}
+
+void test_tally_recovers_after_a_transient_read_failure() {
+  static HistoryTally<64> tally(tally_type);
+  Wired w(3, tally);
+  for (uint32_t i = 0; i < 2 * kSlotsPerSector; i++) {
+    w.write(encounter_rec(static_cast<uint8_t>(i % 7), 1, 1700000000 + i, 1));
+  }
+  w.f.reads_left = 2;
+  tally.rescan();
+  TEST_ASSERT_TRUE(run_scheduled(tally, w.log) < 1000);
+  TEST_ASSERT_TRUE(tally.unavailable());
+  TEST_ASSERT_TRUE(tally.pending());       // never presented as complete
+  TEST_ASSERT_FALSE(tally.wants_step());  // and not retried in a busy loop
+  // Reads work again; a new request (the recorder's minute retry, or an
+  // eviction) resumes the scan through the same predicate.
+  w.f.reads_left = -1;
+  tally.rescan();
+  TEST_ASSERT_TRUE(tally.wants_step());
+  TEST_ASSERT_TRUE(run_scheduled(tally, w.log) < 1000);
+  TEST_ASSERT_FALSE(tally.pending());
+  assert_matches_fresh_scan(tally, w.f);
+  // Recovery by eviction alone.
+  w.f.reads_left = 2;
+  tally.rescan();
+  run_scheduled(tally, w.log);
+  TEST_ASSERT_TRUE(tally.unavailable());
+  w.f.reads_left = -1;
+  for (uint32_t i = 0; i < 2 * kSlotsPerSector; i++) {  // wraps: evicts sector 0
+    w.write(encounter_rec(static_cast<uint8_t>(50 + i % 5), 2, 1750000000 + i, 2));
+  }
+  TEST_ASSERT_TRUE(tally.wants_step());
+  run_scheduled(tally, w.log);
+  TEST_ASSERT_FALSE(tally.pending());
+  assert_matches_fresh_scan(tally, w.f);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
+  RUN_TEST(test_erase_boundary_counts_each_discarded_sighting_once);
+  RUN_TEST(test_save_reports_an_encounter_lost_while_draining);
+  RUN_TEST(test_save_request_during_a_save_gets_the_next_one);
+  RUN_TEST(test_failed_erase_without_change_keeps_records_counted);
+  RUN_TEST(test_partly_completed_erase_is_reconciled_from_flash);
+  RUN_TEST(test_unreadable_sector_before_eviction_is_reconciled);
+  RUN_TEST(test_tally_recovers_after_a_transient_read_failure);
+  RUN_TEST(test_failed_first_write_of_a_sector_keeps_later_records);
+  RUN_TEST(test_failed_first_write_in_the_initial_sector);
+  RUN_TEST(test_failed_first_write_after_wrap);
+  RUN_TEST(test_unreadable_flash_does_not_mount_as_empty);
+  RUN_TEST(test_tracker_discard_emits_nothing_and_keeps_numbering);
+  RUN_TEST(test_ingest_gate);
+  RUN_TEST(test_failed_writes_stay_pending_and_retry);
+  RUN_TEST(test_flush_reports_failure_and_keeps_changes);
+  RUN_TEST(test_failed_close_keeps_the_encounter_until_written);
+  RUN_TEST(test_full_table_with_failing_writes_drops_and_counts);
+  RUN_TEST(test_tally_follows_evictions);
+  RUN_TEST(test_tally_counts_records_written_during_a_rescan);
+  RUN_TEST(test_tally_restarts_when_an_eviction_interrupts_it);
+  RUN_TEST(test_tally_saturation_matches_fresh_scan);
+  RUN_TEST(test_tally_clear_and_unreadable_log);
   RUN_TEST(test_tracker_flush_writes_changed_encounters);
   RUN_TEST(test_clear_reports_progress);
   RUN_TEST(test_distinct_counter);

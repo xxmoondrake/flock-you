@@ -47,6 +47,8 @@ Status sample_status() {
   s.uptime_s = 3725;
   s.wifi_session = true;
   s.detection_paused = true;
+  s.wifi_capture = false;
+  s.ble_scan = false;
   s.idle_minutes = 10;
   s.battery_available = true;
   s.battery_valid = true;
@@ -66,6 +68,9 @@ Status sample_status() {
   s.passkey_temporary = true;
   s.record_seq = 1235;
   s.phone_time = true;
+  s.history_boot = 7;
+  s.history_clears = 2;
+  s.oldest_seq = 33;
   return s;
 }
 
@@ -236,12 +241,14 @@ void test_status_json() {
   TEST_ASSERT_EQUAL_INT('}', json[n - 1]);
   TEST_ASSERT_NOT_NULL(strstr(json, "\"board\":\"heltec_v43\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"dashboard\":\"wifi\",\"detection_paused\":true"));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"capture\":{\"wifi\":false,\"ble\":false}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"battery\":{\"mv\":4050,\"percent\":87}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"gps\":{\"fix\":true,\"fix_type\":3,\"satellites\":9}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"matches\":{\"reported\":12,\"specific\":2}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"used\":1234,\"capacity\":32768"));
   TEST_ASSERT_NOT_NULL(strstr(
-      json, "\"record_seq\":1235,\"phone\":{\"time\":true}}"));
+      json, "\"record_seq\":1235,\"history\":{\"boot\":7,\"clears\":2,\"oldest_seq\":33},"
+            "\"phone\":{\"time\":true}}"));
 
   Status s = sample_status();
   s.battery_valid = false;
@@ -249,7 +256,11 @@ void test_status_json() {
   s.storage_available = false;
   s.wifi_session = false;
   s.phone_time = false;
+  s.detection_paused = false;  // USB standby: capture off without a Wi-Fi session
+  s.ble_scan = true;
   format_status_json(s, json, sizeof(json));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"detection_paused\":false"));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"capture\":{\"wifi\":false,\"ble\":true}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"phone\":{\"time\":false}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"battery\":null"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"gps\":null"));
@@ -564,6 +575,37 @@ void test_notes_set_find_remove() {
   TEST_ASSERT_TRUE(notes.set(make_note(2, NoteLabel::Confirmed, true, "")));  // existing: fine
 }
 
+// A failed save restores the address's previous note: added, changed,
+// ignored, or deleted.
+void test_notes_undo_restores_previous_state() {
+  static Notes notes;
+  notes.clear();
+  notes.set(make_note(1, NoteLabel::Confirmed, false, "kept"));
+  static uint8_t before_bytes[Notes::kMaxBytes];
+  const size_t before_len = notes.serialize(before_bytes, sizeof(before_bytes));
+  const Note changes[] = {
+      make_note(2, NoteLabel::FalsePositive, true, "added"),  // new address
+      make_note(1, NoteLabel::FalsePositive, false, "changed"),
+      make_note(1, NoteLabel::Confirmed, true, "kept"),       // ignored
+      make_note(1, NoteLabel::None, false, ""),               // deleted
+  };
+  static uint8_t after_bytes[Notes::kMaxBytes];
+  for (const Note &change : changes) {
+    const Note before = notes.current(change.mac);
+    TEST_ASSERT_TRUE(notes.set(change));
+    TEST_ASSERT_TRUE(notes.set(before));  // the save failed: undo
+    const size_t len = notes.serialize(after_bytes, sizeof(after_bytes));
+    TEST_ASSERT_EQUAL_UINT(before_len, len);
+    TEST_ASSERT_EQUAL_MEMORY(before_bytes, after_bytes, len);
+  }
+  // Undoing a deletion in a full table has room again.
+  for (uint8_t i = 10; notes.count() < Notes::kMax; i++) notes.set(make_note(i, NoteLabel::None, true, ""));
+  const Note before = notes.current(make_note(1, NoteLabel::None, false, "").mac);
+  TEST_ASSERT_TRUE(notes.set(make_note(1, NoteLabel::None, false, "")));
+  TEST_ASSERT_TRUE(notes.set(before));
+  TEST_ASSERT_EQUAL_STRING("kept", notes.find(before.mac)->text);
+}
+
 void test_notes_serialize_round_trip() {
   static Notes notes, back;
   notes.clear();
@@ -614,6 +656,209 @@ void test_notes_json() {
   TEST_ASSERT_EQUAL_UINT(0, note_json(n, one, len));  // no room for the NUL
 }
 
+// ---- Export walk over a changing log ---------------------------------------
+
+namespace {
+
+// RAM flash with NOR semantics, for a real ring log under the walk.
+class RamFlash : public fy::store::Flash {
+ public:
+  explicit RamFlash(size_t sectors) : data_(sectors * fy::store::kSectorSize, 0xff) {}
+  size_t size() const override { return data_.size(); }
+  bool read(size_t off, void *dst, size_t len) override {
+    memcpy(dst, &data_[off], len);
+    return true;
+  }
+  bool write(size_t off, const void *src, size_t len) override {
+    const uint8_t *s = static_cast<const uint8_t *>(src);
+    for (size_t i = 0; i < len; i++) data_[off + i] &= s[i];
+    return true;
+  }
+  bool erase_sector(size_t off) override {
+    memset(&data_[off], 0xff, fy::store::kSectorSize);
+    return true;
+  }
+
+ private:
+  std::vector<uint8_t> data_;
+};
+
+void append_encounter(fy::store::RecordLog &log, uint32_t n) {
+  EncounterRecord r = sample_encounter();
+  r.encounter = n;  // a distinct encounter, closed, one snapshot each
+  r.h.flags = fy::store::kFlagFinal;
+  log.append(&r);
+}
+
+// Walks `log` from a snapshot taken now; after the `at`-th emitted record,
+// runs `change` (as concurrent capture or an erase would). Collects the
+// emitted encounter numbers.
+template <typename Change>
+WalkEnd walk_with(fy::store::RecordLog &log, size_t at, Change change, std::vector<uint32_t> *out) {
+  static uint8_t buf[fy::store::kSectorSize];
+  static fy::store::EncounterDedup dedup;
+  dedup.reset();
+  const LogWalk walk = {static_cast<uint32_t>(log.sectors()),
+                        static_cast<uint32_t>(log.newest_sector()), log.next_seq(), 0,
+                        log.revision()};
+  return walk_encounters(
+      walk, buf, dedup,
+      [&](uint32_t sector, uint8_t *b, uint32_t *revision) {
+        const size_t n = log.read_sector(sector, b);
+        *revision = log.revision();
+        return n;
+      },
+      [&](const EncounterRecord &rec) {
+        out->push_back(rec.encounter);
+        if (out->size() == at) change();
+        return true;
+      });
+}
+
+}  // namespace
+
+void test_walk_of_a_stable_log_is_complete() {
+  RamFlash f(4);
+  fy::store::RecordLog log(f);
+  log.mount();
+  for (uint32_t n = 1; n <= 50; n++) append_encounter(log, n);
+  std::vector<uint32_t> got;
+  TEST_ASSERT_EQUAL(WalkEnd::Complete, walk_with(log, 0, [] {}, &got));
+  TEST_ASSERT_EQUAL_UINT(50, got.size());
+  TEST_ASSERT_EQUAL_UINT32(50, got.front());  // newest first
+}
+
+void test_walk_ignores_appends_that_evict_nothing() {
+  RamFlash f(4);
+  fy::store::RecordLog log(f);
+  log.mount();
+  for (uint32_t n = 1; n <= 50; n++) append_encounter(log, n);
+  std::vector<uint32_t> got;
+  const WalkEnd end = walk_with(log, 5, [&] {
+    for (uint32_t n = 51; n <= 60; n++) append_encounter(log, n);  // free slots remain
+  }, &got);
+  TEST_ASSERT_EQUAL(WalkEnd::Complete, end);
+  TEST_ASSERT_EQUAL_UINT(50, got.size());  // the snapshot's records, none of the new ones
+  for (uint32_t n : got) TEST_ASSERT_TRUE(n <= 50);
+}
+
+void test_walk_spanning_an_eviction_is_changed() {
+  RamFlash f(3);
+  fy::store::RecordLog log(f);
+  log.mount();
+  for (uint32_t n = 1; n <= 3 * fy::store::kSlotsPerSector; n++) append_encounter(log, n);  // full
+  std::vector<uint32_t> got;
+  const WalkEnd end = walk_with(log, 1, [&] { append_encounter(log, 1000); }, &got);  // erases the oldest sector
+  TEST_ASSERT_EQUAL(WalkEnd::Changed, end);
+}
+
+void test_walk_spanning_a_clear_is_changed() {
+  RamFlash f(4);
+  fy::store::RecordLog log(f);
+  log.mount();
+  for (uint32_t n = 1; n <= 50; n++) append_encounter(log, n);
+  std::vector<uint32_t> got;
+  TEST_ASSERT_EQUAL(WalkEnd::Changed, walk_with(log, 3, [&] { log.clear(); }, &got));
+}
+
+void test_walk_stops_when_the_client_goes() {
+  RamFlash f(4);
+  fy::store::RecordLog log(f);
+  log.mount();
+  for (uint32_t n = 1; n <= 10; n++) append_encounter(log, n);
+  static uint8_t buf[fy::store::kSectorSize];
+  static fy::store::EncounterDedup dedup;
+  dedup.reset();
+  const LogWalk walk = {static_cast<uint32_t>(log.sectors()),
+                        static_cast<uint32_t>(log.newest_sector()), log.next_seq(), 0,
+                        log.revision()};
+  int emitted = 0;
+  const WalkEnd end = walk_encounters(
+      walk, buf, dedup,
+      [&](uint32_t sector, uint8_t *b, uint32_t *revision) {
+        *revision = log.revision();
+        return log.read_sector(sector, b);
+      },
+      [&](const EncounterRecord &) { return ++emitted < 3; });
+  TEST_ASSERT_EQUAL(WalkEnd::Stopped, end);
+  TEST_ASSERT_EQUAL(3, emitted);
+}
+
+// ---- Note saves with failing storage ---------------------------------------
+
+namespace {
+
+// Stands in for NVS: keeps the bytes of the last successful store; the
+// first `fail` calls fail without storing.
+struct FakeStore {
+  int fail = 0;
+  int calls = 0;
+  std::vector<uint8_t> bytes;
+};
+
+bool fake_store(const Notes &notes, void *ctx) {
+  FakeStore *s = static_cast<FakeStore *>(ctx);
+  if (s->calls++ < s->fail) return false;
+  static uint8_t buf[Notes::kMaxBytes];
+  const size_t len = notes.serialize(buf, sizeof(buf));
+  s->bytes.assign(buf, buf + len);
+  return true;
+}
+
+std::vector<uint8_t> bytes_of(const Notes &notes) {
+  static uint8_t buf[Notes::kMaxBytes];
+  const size_t len = notes.serialize(buf, sizeof(buf));
+  return std::vector<uint8_t>(buf, buf + len);
+}
+
+}  // namespace
+
+void test_save_note_rolls_back_a_failed_store() {
+  const Note changes[] = {
+      make_note(2, NoteLabel::FalsePositive, true, "added"),
+      make_note(1, NoteLabel::FalsePositive, false, "changed"),
+      make_note(1, NoteLabel::Confirmed, true, "kept"),  // ignored
+      make_note(1, NoteLabel::None, false, ""),          // deleted
+  };
+  for (int failures : {1, 2}) {  // the store fails; then the restoring store too
+    for (const Note &change : changes) {
+      static Notes notes;
+      notes.clear();
+      notes.set(make_note(1, NoteLabel::Confirmed, false, "kept"));
+      FakeStore store;
+      TEST_ASSERT_EQUAL(NoteSaveResult::Saved,
+                        save_note(notes, notes.at(0), fake_store, &store));  // stored once
+      const std::vector<uint8_t> before = bytes_of(notes);
+      store.fail = store.calls + failures;
+      bool restored = true;
+      TEST_ASSERT_EQUAL(NoteSaveResult::NotSaved, save_note(notes, change, fake_store, &store, &restored));
+      TEST_ASSERT_EQUAL(failures == 1, restored);
+      TEST_ASSERT_TRUE(bytes_of(notes) == before);  // live behaviour unchanged
+      TEST_ASSERT_TRUE(store.bytes == before);      // the stored copy too
+      // A later, unrelated successful save does not carry the rejected change.
+      TEST_ASSERT_EQUAL(NoteSaveResult::Saved,
+                        save_note(notes, make_note(9, NoteLabel::None, true, ""), fake_store, &store));
+      static Notes rebooted;
+      TEST_ASSERT_TRUE(rebooted.deserialize(store.bytes.data(), store.bytes.size()));
+      TEST_ASSERT_TRUE(bytes_of(rebooted) == bytes_of(notes));
+      const Note *one = rebooted.find(changes[1].mac);
+      TEST_ASSERT_NOT_NULL(one);
+      TEST_ASSERT_EQUAL_STRING("kept", one->text);
+      TEST_ASSERT_NULL(rebooted.find(changes[0].mac));
+    }
+  }
+}
+
+void test_save_note_on_a_full_table_stores_nothing() {
+  static Notes notes;
+  notes.clear();
+  FakeStore store;
+  for (uint8_t i = 0; notes.count() < Notes::kMax; i++) notes.set(make_note(i, NoteLabel::None, true, ""));
+  TEST_ASSERT_EQUAL(NoteSaveResult::Full,
+                    save_note(notes, make_note(200, NoteLabel::Confirmed, false, ""), fake_store, &store));
+  TEST_ASSERT_EQUAL(0, store.calls);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_alphabet_avoids_confusable_characters);
@@ -643,7 +888,15 @@ int main(int, char **) {
   RUN_TEST(test_note_labels);
   RUN_TEST(test_clean_note_text);
   RUN_TEST(test_notes_set_find_remove);
+  RUN_TEST(test_notes_undo_restores_previous_state);
   RUN_TEST(test_notes_serialize_round_trip);
   RUN_TEST(test_notes_json);
+  RUN_TEST(test_walk_of_a_stable_log_is_complete);
+  RUN_TEST(test_walk_ignores_appends_that_evict_nothing);
+  RUN_TEST(test_walk_spanning_an_eviction_is_changed);
+  RUN_TEST(test_walk_spanning_a_clear_is_changed);
+  RUN_TEST(test_walk_stops_when_the_client_goes);
+  RUN_TEST(test_save_note_rolls_back_a_failed_store);
+  RUN_TEST(test_save_note_on_a_full_table_stores_nothing);
   return UNITY_END();
 }

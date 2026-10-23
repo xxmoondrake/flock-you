@@ -77,10 +77,13 @@ struct UiModel {
   uint8_t storage_percent;
 
   // Detections screen: device types with at least one device, in display
-  // order. Counts are lower bounds when *_saturated is set.
+  // order. Counts are lower bounds when *_saturated is set; while
+  // stored_pending is set the stored counts are the last complete tally,
+  // being recounted after old records left the log.
   DetectionRow detections[kMaxDetectionRows];
   int detection_rows;
   bool counts_saturated;
+  bool stored_pending;
 
   // Data screen.
   bool storage_available;

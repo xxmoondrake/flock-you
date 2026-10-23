@@ -140,6 +140,8 @@ size_t format_status_json(const Status &s, char *out, size_t cap) {
       static_cast<unsigned long>(s.uptime_s), s.wifi_session ? "wifi" : "usb",
       s.detection_paused ? "true" : "false", static_cast<unsigned>(s.idle_minutes),
       s.passkey_temporary ? "true" : "false");
+  w.add(",\"capture\":{\"wifi\":%s,\"ble\":%s}", s.wifi_capture ? "true" : "false",
+        s.ble_scan ? "true" : "false");
   w.add(",\"battery\":");
   if (s.battery_available && s.battery_valid) {
     w.add("{\"mv\":%u,\"percent\":%u}", static_cast<unsigned>(s.battery_mv),
@@ -165,8 +167,10 @@ size_t format_status_json(const Status &s, char *out, size_t cap) {
           static_cast<unsigned long>(s.records_capacity),
           static_cast<unsigned long>(s.encounter_records));
   }
-  w.add(",\"record_seq\":%lu,\"phone\":{\"time\":%s}}",
-        static_cast<unsigned long>(s.record_seq), s.phone_time ? "true" : "false");
+  w.add(",\"record_seq\":%lu,\"history\":{\"boot\":%lu,\"clears\":%lu,\"oldest_seq\":%lu}",
+        static_cast<unsigned long>(s.record_seq), static_cast<unsigned long>(s.history_boot),
+        static_cast<unsigned long>(s.history_clears), static_cast<unsigned long>(s.oldest_seq));
+  w.add(",\"phone\":{\"time\":%s}}", s.phone_time ? "true" : "false");
   return w.finish();
 }
 

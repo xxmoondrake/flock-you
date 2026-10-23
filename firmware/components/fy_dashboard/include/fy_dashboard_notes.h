@@ -43,6 +43,9 @@ class Notes {
   static constexpr size_t kMaxBytes = 1 + kMax * kEntryBytes;
 
   const Note *find(const uint8_t mac[6]) const;
+  // The note on an address, or an empty one with its address when there is
+  // none. Setting it back undoes a set() on that address.
+  Note current(const uint8_t mac[6]) const;
   // Adds or replaces the note for its address; a note with no label, not
   // ignored, and no text removes it. False when the table is full.
   bool set(const Note &note);
@@ -65,6 +68,20 @@ size_t note_json(const Note &note, char *out, size_t cap);
 
 // Enough for note_json() of any note, even one of nothing but quotes.
 constexpr size_t kNoteJsonCap = 80 + 2 * kNoteTextCap;
+
+enum class NoteSaveResult : uint8_t { Saved, Full, NotSaved };
+
+// Stores the whole table; true when it was stored.
+using StoreNotes = bool (*)(const Notes &notes, void *ctx);
+
+// Applies `note` and stores the table. When the store fails, the change
+// must neither stay in effect nor ride along with a later save: the
+// address's previous note is put back and that table stored again, in case
+// the failed attempt got far enough to keep the change. `*restored` (when
+// given) tells whether that second store succeeded; if not, the stored copy
+// may differ until the next successful save.
+NoteSaveResult save_note(Notes &notes, const Note &note, StoreNotes store, void *ctx,
+                         bool *restored = nullptr);
 
 // All notes as a JSON array of note_json() objects, as the dashboard streams
 // them. Returns the length written, or 0 when `cap` is too small.

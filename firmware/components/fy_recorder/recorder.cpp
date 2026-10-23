@@ -43,6 +43,10 @@ constexpr auto kPartitionSubtype = static_cast<esp_partition_subtype_t>(0x40);
 constexpr size_t kQueueDepth = 32;
 constexpr uint32_t kStatusIntervalMs = 60000;
 constexpr uint32_t kLoopWaitMs = 250;  // bounds the latency of save/erase requests
+// While the stored-history tally is rebuilt, the loop scans this many
+// sectors per pass and waits at most this long between passes.
+constexpr size_t kRescanSectorsPerPass = 4;
+constexpr uint32_t kRescanWaitMs = 10;
 // GNSS time older than this (receiver silent) is not used for timestamps.
 constexpr uint32_t kMaxTimeAgeMs = 10000;
 // Browser clocks before 2025 are not trusted.
@@ -74,13 +78,20 @@ RecordLog *record_log = nullptr;
 EncounterTracker *tracker = nullptr;
 SemaphoreHandle_t log_mutex = nullptr;  // guards record_log
 QueueHandle_t queue = nullptr;
+// Closed while an erase runs; see fy::store::IngestGate.
+fy::store::IngestGate gate;
 
-// Distinct-device counters; touched only by the recorder task (and by start
-// before the task exists).
+// A sighting with the gate stamp it was captured under.
+struct Queued {
+  uint32_t stamp;
+  Sighting s;
+};
+
+// Distinct devices this session; touched only by the recorder task (and by
+// start before the task exists).
 fy::store::DistinctCounter<512> session_devices;
-fy::store::DistinctCounter<2048> stored_devices;
 
-std::atomic<bool> save_requested{false};
+fy::store::SaveLedger saves;
 std::atomic<bool> erase_requested{false};
 
 portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -95,6 +106,12 @@ uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 uint8_t type_of(uint8_t rule, const uint8_t mac[6]) {
   return static_cast<uint8_t>(fy::classify(static_cast<fy::Rule>(rule), mac).type);
 }
+
+uint8_t type_of_record(const EncounterRecord &e) { return type_of(e.rule, e.mac); }
+
+// Statistics over the stored history; recorder task only (and start before
+// the task exists).
+fy::store::HistoryTally<2048> history(type_of_record);
 
 // Boot session counter, persisted in NVS so uptimes from different sessions
 // are never confused. It also stays above every session in the log, so
@@ -112,19 +129,26 @@ uint32_t next_boot_session(uint32_t newest_logged) {
   return boot;
 }
 
-void note_utc(uint32_t utc) {
-  if (utc && (status.oldest_utc == 0 || utc < status.oldest_utc)) status.oldest_utc = utc;
-}
-
-// Copies the counters into the shared status (recorder task only).
+// Copies the counters into the shared status (recorder task only). Stored
+// distinct devices and the oldest timestamp are published only from a
+// complete tally.
 void publish_counts() {
+  const bool pending = history.pending();
   portENTER_CRITICAL(&status_lock);
   for (int t = 0; t < kFyRecorderMaxTypes; t++) {
     status.session_devices[t] = session_devices.count(static_cast<uint8_t>(t));
-    status.stored_devices[t] = stored_devices.count(static_cast<uint8_t>(t));
+    if (!pending) status.stored_devices[t] = history.devices().count(static_cast<uint8_t>(t));
   }
   status.session_saturated = session_devices.saturated();
-  status.stored_saturated = stored_devices.saturated();
+  if (!pending) {
+    status.stored_saturated = history.devices().saturated();
+    status.oldest_utc = history.oldest_utc();
+  }
+  status.stored_pending = pending;
+  if (history.counts_exact()) {  // else the last exact counts, until a rescan settles them
+    status.encounter_records = history.encounters();
+    status.battery_records = history.battery();
+  }
   portEXIT_CRITICAL(&status_lock);
 }
 
@@ -150,13 +174,10 @@ bool append(void *record) {
   return ok;
 }
 
-void encounter_sink(EncounterRecord &rec, void *) {
-  if (!append(&rec)) return;
-  stored_devices.add(type_of(rec.rule, rec.mac), rec.mac);
-  portENTER_CRITICAL(&status_lock);
-  status.encounter_records++;
-  note_utc(rec.first.utc);
-  portEXIT_CRITICAL(&status_lock);
+bool encounter_sink(EncounterRecord &rec, void *) {
+  if (!append(&rec)) return false;
+  history.added(reinterpret_cast<const uint8_t *>(&rec));
+  return true;
 }
 
 // Time and the detector's own location at this moment. GNSS time wins over
@@ -193,8 +214,14 @@ void capture_context(uint32_t *utc, Location *loc) {
 }
 
 // Detector hook: runs in the matcher task, so it only captures and enqueues.
+// The gate stamp is taken first, so nothing captured before an erase is
+// recorded after it.
 void on_sighting(const fy_detector_sighting &d) {
-  Sighting s = {};
+  const uint32_t stamp = gate.admit();
+  if (!stamp) return;  // counted by the gate
+  Queued q = {};
+  q.stamp = stamp;
+  Sighting &s = q.s;
   memcpy(s.mac, d.mac, sizeof(s.mac));
   s.rule = d.rule;
   s.rank = d.rank;
@@ -209,7 +236,7 @@ void on_sighting(const fy_detector_sighting &d) {
   capture_context(&utc, &loc);  // record fields are packed: no direct pointers
   s.utc = utc;
   s.loc = loc;
-  if (xQueueSend(queue, &s, 0) != pdTRUE) {
+  if (xQueueSend(queue, &q, 0) != pdTRUE) {
     portENTER_CRITICAL(&status_lock);
     status.dropped++;
     portEXIT_CRITICAL(&status_lock);
@@ -233,12 +260,7 @@ void record_battery(uint32_t now) {
   r.mv = b.mv;
   r.raw_mv = b.raw_mv;
   r.percent = b.percent;
-  if (append(&r)) {
-    portENTER_CRITICAL(&status_lock);
-    status.battery_records++;
-    note_utc(utc);
-    portEXIT_CRITICAL(&status_lock);
-  }
+  if (append(&r)) history.added(reinterpret_cast<const uint8_t *>(&r));
 }
 #endif
 
@@ -250,6 +272,15 @@ void erase_progress(size_t done, size_t total, void *) {
 
 void erase_all() {
   ESP_LOGW(TAG, "erasing all records (user request)");
+  // Nothing captured before this point may be recorded after it: sightings
+  // are not admitted until the erase ends, the queued ones are discarded,
+  // one arriving later under an older stamp is discarded when taken, and
+  // open encounters are forgotten without being written. The gate counts
+  // each discarded sighting once (erase_dropped). Encounter numbers keep
+  // counting.
+  gate.close();
+  for (Queued q; xQueueReceive(queue, &q, 0) == pdTRUE;) gate.discarded();
+  tracker->discard();
   portENTER_CRITICAL(&status_lock);
   status.erasing = true;
   status.erase_percent = 0;
@@ -257,21 +288,35 @@ void erase_all() {
 
   xSemaphoreTake(log_mutex, portMAX_DELAY);
   const bool ok = record_log->clear(erase_progress, nullptr);
+  bool readable = true;
+  if (ok) {
+    history.reset();
+  } else {
+    // Some sectors may still hold records: take the log as it now is.
+    readable = record_log->mount();
+    history.rescan();
+  }
+  const size_t used = record_log->used();
+  const size_t capacity = record_log->capacity();
+  portENTER_CRITICAL(&status_lock);
+  status.clears++;  // under log_mutex, so log snapshots see it with the erase
+  portEXIT_CRITICAL(&status_lock);
   xSemaphoreGive(log_mutex);
-  stored_devices.reset();
 
+  const uint8_t pct = capacity ? static_cast<uint8_t>(used * 100 / capacity) : 0;
   portENTER_CRITICAL(&status_lock);
   status.erasing = false;
-  status.used = 0;
-  status.used_percent = 0;
-  status.storage_warning = false;
-  status.encounter_records = 0;
-  status.battery_records = 0;
-  status.oldest_utc = 0;
+  status.last_erase_ok = ok;
+  status.used = used;
+  status.used_percent = pct;
+  status.storage_warning = pct >= CONFIG_FY_STORAGE_WARN_PERCENT;
   if (!ok) status.write_errors++;
+  if (!readable) status.available = false;
   portEXIT_CRITICAL(&status_lock);
   publish_counts();
-  ESP_LOGW(TAG, "erase %s", ok ? "complete" : "FAILED");
+  gate.open();
+  ESP_LOGW(TAG, "erase %s%s", ok ? "complete" : "FAILED",
+           readable ? "" : "; the log cannot be read back");
 }
 
 void log_status() {
@@ -289,6 +334,13 @@ void log_status() {
            s.storage_warning ? " STORAGE WARNING: offload records" : "");
 }
 
+// Hands one queued sighting to the tracker, unless an erase made it stale.
+void take(const Queued &q) {
+  if (!gate.accept(q.stamp)) return;
+  tracker->on_sighting(q.s);
+  if (session_devices.add(type_of(q.s.rule, q.s.mac), q.s.mac)) publish_counts();
+}
+
 void recorder_task(void *) {
 #if CONFIG_FY_BATTERY_LOG
   const uint32_t battery_interval_ms = CONFIG_FY_BATTERY_LOG_INTERVAL_S * 1000u;
@@ -296,21 +348,34 @@ void recorder_task(void *) {
 #endif
   uint32_t last_status = now_ms();
   for (;;) {
-    Sighting s;
-    if (xQueueReceive(queue, &s, pdMS_TO_TICKS(kLoopWaitMs)) == pdTRUE) {
-      tracker->on_sighting(s);
-      if (session_devices.add(type_of(s.rule, s.mac), s.mac)) publish_counts();
-    }
+    Queued q;
+    const uint32_t wait_ms = history.wants_step() ? kRescanWaitMs : kLoopWaitMs;
+    if (xQueueReceive(queue, &q, pdMS_TO_TICKS(wait_ms)) == pdTRUE) take(q);
     const uint32_t now = now_ms();
     tracker->tick(now);
 
-    if (save_requested.exchange(false)) {
-      tracker->flush(now);
+    if (const uint32_t ticket = saves.due()) {
+      // Covers every sighting queued before the save starts; a request made
+      // meanwhile gets the next save.
+      const bool ok = saves.run(ticket, *tracker, now, [&] {
+        for (UBaseType_t n = uxQueueMessagesWaiting(queue);
+             n > 0 && xQueueReceive(queue, &q, 0) == pdTRUE; n--) {
+          take(q);
+        }
+      });
       portENTER_CRITICAL(&status_lock);
-      status.saves_completed++;
+      status.save_answered = ticket;
+      status.last_save_ok = ok;
       portEXIT_CRITICAL(&status_lock);
+      if (!ok) ESP_LOGW(TAG, "save incomplete: a write failed or an encounter was given up");
     }
     if (erase_requested.exchange(false)) erase_all();
+    if (history.wants_step()) {
+      xSemaphoreTake(log_mutex, portMAX_DELAY);
+      const bool done = history.step(*record_log, kRescanSectorsPerPass);
+      xSemaphoreGive(log_mutex);
+      if (done) publish_counts();
+    }
 
 #if CONFIG_FY_BATTERY_LOG
     if (now - last_battery >= battery_interval_ms) {
@@ -321,42 +386,17 @@ void recorder_task(void *) {
     portENTER_CRITICAL(&status_lock);
     status.encounters_started = tracker->started();
     status.encounters_active = tracker->active();
+    status.encounters_dropped = tracker->dropped();
+    status.erase_dropped = gate.dropped();
     portEXIT_CRITICAL(&status_lock);
     publish_counts();
     if (now - last_status >= kStatusIntervalMs) {
       last_status = now;
       log_status();
+      // A tally that could not read the log tries again, once a minute.
+      if (history.unavailable() && !history.wants_step()) history.rescan();
     }
   }
-}
-
-// Tallies the stored history once at boot for the device screens. Returns
-// the newest boot session in the log.
-uint32_t scan_history() {
-  uint32_t encounters = 0, battery = 0, oldest = 0, newest_boot = 0;
-  record_log->for_each([&](const uint8_t *rec) {
-    fy::store::RecordHeader h;
-    memcpy(&h, rec, sizeof(h));
-    if (h.boot > newest_boot) newest_boot = h.boot;
-    uint32_t utc = 0;
-    if (fy::store::record_type(rec) == fy::store::kTypeEncounter) {
-      EncounterRecord e;
-      memcpy(&e, rec, sizeof(e));
-      stored_devices.add(type_of(e.rule, e.mac), e.mac);
-      encounters++;
-      utc = e.first.utc;
-    } else if (fy::store::record_type(rec) == fy::store::kTypeBattery) {
-      BatteryRecord b;
-      memcpy(&b, rec, sizeof(b));
-      battery++;
-      utc = b.utc;
-    }
-    if (utc && (oldest == 0 || utc < oldest)) oldest = utc;
-  });
-  status.encounter_records = encounters;
-  status.battery_records = battery;
-  status.oldest_utc = oldest;
-  return newest_boot;
 }
 
 }  // namespace
@@ -369,18 +409,26 @@ esp_err_t fy_recorder_start() {
     return ESP_ERR_NOT_FOUND;
   }
   log_mutex = xSemaphoreCreateMutex();
-  queue = xQueueCreate(kQueueDepth, sizeof(Sighting));
+  queue = xQueueCreate(kQueueDepth, sizeof(Queued));
   flash = new (std::nothrow) PartitionFlash(p);
   record_log = flash ? new (std::nothrow) RecordLog(*flash) : nullptr;
   if (!log_mutex || !queue || !record_log) return ESP_ERR_NO_MEM;
+  const uint32_t mount_start = now_ms();
   if (!record_log->mount()) {
-    ESP_LOGE(TAG, "log mount failed");
+    ESP_LOGE(TAG, "log mount failed: the partition could not be read");
     return ESP_FAIL;
   }
+  const uint32_t mount_ms = now_ms() - mount_start;
+  record_log->set_eviction_hook(
+      [](const RecordLog::Eviction &e, void *) { history.evicted(e); }, nullptr);
 
   // The recorder task does not exist yet, so status is not shared here.
   const uint32_t scan_start = now_ms();
-  const uint32_t boot = next_boot_session(scan_history());
+  history.rescan();
+  while (!history.step(*record_log, 64)) {
+  }
+  if (history.unavailable()) ESP_LOGW(TAG, "stored history could not be read in full");
+  const uint32_t boot = next_boot_session(history.newest_boot());
   fy::store::TrackerConfig cfg;
   cfg.absence_ms = CONFIG_FY_ENCOUNTER_ABSENCE_S * 1000u;
   cfg.checkpoint_ms = CONFIG_FY_ENCOUNTER_CHECKPOINT_S * 1000u;
@@ -402,12 +450,12 @@ esp_err_t fy_recorder_start() {
   fy_detector_set_sighting_hook(on_sighting);
   ESP_LOGI(TAG,
            "recording to '%s' (%lu KB): %u/%u records (%lu encounter, %lu battery), boot "
-           "session %lu, history scan %lu ms",
+           "session %lu, mount %lu ms, history scan %lu ms",
            kPartitionLabel, static_cast<unsigned long>(p->size / 1024),
            static_cast<unsigned>(used), static_cast<unsigned>(capacity),
            static_cast<unsigned long>(status.encounter_records),
            static_cast<unsigned long>(status.battery_records), static_cast<unsigned long>(boot),
-           static_cast<unsigned long>(now_ms() - scan_start));
+           static_cast<unsigned long>(mount_ms), static_cast<unsigned long>(now_ms() - scan_start));
   return ESP_OK;
 }
 
@@ -417,24 +465,21 @@ void fy_recorder_get_status(fy_recorder_status *out) {
   portEXIT_CRITICAL(&status_lock);
 }
 
-void fy_recorder_request_save() { save_requested = true; }
+uint32_t fy_recorder_request_save() { return saves.request(); }
 
-bool fy_recorder_save_and_wait(uint32_t timeout_ms) {
-  if (!record_log) return false;
-  uint32_t before;
-  portENTER_CRITICAL(&status_lock);
-  before = status.saves_completed;
-  portEXIT_CRITICAL(&status_lock);
-  fy_recorder_request_save();
+fy_recorder_save_result fy_recorder_save_and_wait(uint32_t timeout_ms) {
+  if (!record_log) return FY_RECORDER_SAVE_FAILED;
+  const uint32_t ticket = fy_recorder_request_save();
   const uint32_t start = now_ms();
   while (now_ms() - start < timeout_ms) {
     vTaskDelay(pdMS_TO_TICKS(20));
     portENTER_CRITICAL(&status_lock);
-    const bool done = status.saves_completed != before;
+    const bool done = fy::store::SaveLedger::answers(status.save_answered, ticket);
+    const bool ok = status.last_save_ok;
     portEXIT_CRITICAL(&status_lock);
-    if (done) return true;
+    if (done) return ok ? FY_RECORDER_SAVED : FY_RECORDER_SAVE_FAILED;
   }
-  return false;
+  return FY_RECORDER_SAVE_TIMEOUT;
 }
 
 void fy_recorder_request_erase() {
@@ -465,14 +510,21 @@ bool fy_recorder_log_snapshot(fy_recorder_log_cursor *out) {
   out->sectors = static_cast<uint32_t>(record_log->sectors());
   out->newest_sector = static_cast<uint32_t>(record_log->newest_sector());
   out->next_seq = record_log->next_seq();
+  out->oldest_seq = record_log->oldest_seq();
+  out->revision = record_log->revision();
+  portENTER_CRITICAL(&status_lock);
+  out->boot = status.boot;
+  out->clears = status.clears;
+  portEXIT_CRITICAL(&status_lock);
   xSemaphoreGive(log_mutex);
   return out->sectors > 0;
 }
 
-size_t fy_recorder_read_sector(uint32_t sector, uint8_t *buf) {
+size_t fy_recorder_read_sector(uint32_t sector, uint8_t *buf, uint32_t *revision) {
   if (!record_log) return 0;
   xSemaphoreTake(log_mutex, portMAX_DELAY);
   const size_t n = record_log->read_sector(sector, buf);
+  *revision = record_log->revision();
   xSemaphoreGive(log_mutex);
   return n;
 }

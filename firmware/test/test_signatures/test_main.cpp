@@ -326,14 +326,28 @@ void test_flock_softap_ssid() {
     TEST_ASSERT_FALSE_MESSAGE(candidate(no, true), ssid);
     TEST_ASSERT_EQUAL_UINT_MESSAGE(0, match_frame(no, true, m), ssid);
   }
-  // A probe request for the network, and a probe response from it.
-  Bytes probe = header(0x40, kBroadcast, kOtherMac, kBroadcast);
-  append_ssid(probe, "Flock-0FEED1");
-  TEST_ASSERT_EQUAL_UINT(1, match_frame(probe, true, m));
+  // A probe response from the network matches; an ordinary client's probe
+  // request looking for it does not (directed or not).
   Bytes response = header(0x50, kOtherMac, kOtherMac, kOtherMac);
   response.insert(response.end(), 12, 0x00);
   append_ssid(response, "Flock-0FEED1");
+  TEST_ASSERT_TRUE(candidate(response, true));
   TEST_ASSERT_EQUAL_UINT(1, match_frame(response, true, m));
+  TEST_ASSERT_EQUAL(Rule::WifiSsidFlock, m[0].rule);
+  for (const uint8_t *dest : {kBroadcast, kOtherMac}) {
+    Bytes probe = header(0x40, dest, kOtherMac, dest);
+    append_ssid(probe, "Flock-0FEED1");
+    TEST_ASSERT_FALSE(candidate(probe, true));
+    TEST_ASSERT_EQUAL_UINT(0, match_frame(probe, true, m));
+  }
+  // A client whose own address matches another rule still matches that
+  // rule, but not the SSID one.
+  Bytes from_flock = header(0x40, kBroadcast, kFlockMac, kBroadcast);
+  append_ssid(from_flock, "Flock-0FEED1");
+  TEST_ASSERT_TRUE(candidate(from_flock, true));
+  const size_t n = match_frame(from_flock, true, m);
+  TEST_ASSERT_TRUE(n >= 1);
+  for (size_t i = 0; i < n; i++) TEST_ASSERT_TRUE(m[i].rule != Rule::WifiSsidFlock);
 }
 
 void test_unrelated_frame_has_no_match() {
