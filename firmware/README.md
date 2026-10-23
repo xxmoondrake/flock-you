@@ -9,7 +9,7 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 ## Behavior
 
-**Capture.** Wi-Fi in promiscuous receive on channels 11/6/1 (250 ms dwell); passive BLE scanning (30 ms window every 300 ms). Nothing is transmitted while observing. Capture callbacks only pre-filter and copy into bounded queues for a matcher task; full queues drop and count, never blocking the radios.
+**Capture.** Wi-Fi in promiscuous receive on every 2.4 GHz channel the configured country allows (1-11 by default, 1-13 with a country such as GB or DE), highest first, 250 ms each. Flock cameras probe while stepping up through the channels about every 125 ms (upstream's observation), and their own traffic sits on whatever channel their network uses; upstream's 1/6/11 plan is an option. 5 GHz is out of reach: the ESP32-S3 radio is 2.4 GHz only. BLE: passive scanning (30 ms window every 300 ms). Nothing is transmitted while observing. Capture callbacks only pre-filter and copy into bounded queues for a matcher task; full queues drop and count, never blocking the radios.
 
 **Matching.** Upstream flock-you's Flock signatures (pinned at upstream commit `6704f01`), reviewed on 2026-10-22 against the device families of datafx/alpr_detector: a 78-entry IEEE vendor watchlist (ALPR, body cameras, two-way radios, vehicle networking, speed radar, light bars, drones, gunshot sensors), Axon, BodyWorn, and Motorola BLE identifiers, and Flock's SoftAP SSID. Every identifier was checked against the IEEE or Bluetooth SIG registries or a published field capture; sources, labels, and the changes from upstream are in [`datasets/esp_idf_firmware_signatures.md`](../datasets/esp_idf_firmware_signatures.md). Each match is **specific** or **possible** (broad manufacturer prefixes or generic identifiers); neither label proves what a device is. Device types group matches by gear category. The console reports a match at most once per address per 5 s unless it strengthens, with fix state (`gps=current hdop=…` or `no_fix`) but no coordinates. A specific match flashes the LED three times.
 
@@ -59,6 +59,9 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 | `FY_STATUS_LED_PATTERNS` | XIAO only | Show the operating mode on the LED |
 | `FY_GPS_LOG_RAW_NMEA` | off | Echo raw NMEA to the console (`heltec_v43_debug_nmea`) |
 | `FY_SERIAL_JSON` | on | Print upstream dashboard JSON for each reported match |
+| `FY_WIFI_COUNTRY` | `01` (world safe: channels 1-11) | Regulatory domain: sets the swept channels and the dashboard's transmit rules |
+| `FY_WIFI_CHANNELS_UPSTREAM` | off | Sweep only channels 11, 6, and 1 |
+| `FY_WIFI_DWELL_MS` | 250 | Time on each channel |
 | `FY_SIG_MOTOROLA`, `FY_SIG_SIERRA_WIRELESS` | on | Match these broad vendors (labeled possible) |
 | `FY_SIG_CRADLEPOINT` | off | Match Cradlepoint vehicle routers (noisy in the reference's field tests) |
 | `FY_SIG_RADIO_OUIS_ANY_FRAME` | off | Match the Flock radio-module OUIs (Lite-On and others) on any frame, as upstream does, not only in wildcard probes |
@@ -73,7 +76,7 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 
 ## Planned
 
-- Field validation of the reviewed signatures, a review of the legacy flocker rules, and Wi-Fi channels beyond 1, 6, and 11.
+- Field validation of the reviewed signatures and a review of the legacy flocker rules. 5 GHz coverage would need a different chip (an ESP32-C5, for example).
 - Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing.
 - GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.

@@ -24,7 +24,7 @@ What changed:
 
 Not carried over: the reference's test SSID (`ALPRDET-TEST`), and its rule that OUIs match only non-randomized Wi-Fi addresses (`82:6b:f2` is locally administered and stays in the probe-gated list). Kept although the reference lacks them: upstream's Nordic DFU name and service, possible.
 
-Still open: field validation of the new families (none of them has been seen by this firmware yet); Wi-Fi channel coverage (1, 6, and 11 only); a review of the legacy flocker rules; and `D8:1F:65`, which stays only while every device seen on it is Axon's.
+Still open: field validation of the new families (none of them has been seen by this firmware yet); a review of the legacy flocker rules; and `D8:1F:65`, which stays only while every device seen on it is Axon's.
 
 ## Rules
 

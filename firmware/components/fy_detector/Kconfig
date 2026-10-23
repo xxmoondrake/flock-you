@@ -1,3 +1,39 @@
+menu "Detector Wi-Fi capture"
+
+    config FY_WIFI_COUNTRY
+        string "Wi-Fi country code"
+        default "01"
+        help
+            The regulatory domain, which sets the channels the radio may
+            tune to and the Wi-Fi dashboard's transmit rules. "01" is
+            ESP-IDF's world-safe default: channels 1-11, as in the US and
+            Canada. Set your country (for example GB or DE) to also sweep
+            channels 12 and 13 where they are allowed. Codes ESP-IDF
+            accepts: AT AU BE BG BR CA CH CN CY CZ DE DK EE ES FI FR GB GR HK
+            HR HU IE IN IS IT JP KR LI LT LU LV MT MX NL NO NZ PL PT RO SE SI
+            SK TW US.
+
+    config FY_WIFI_CHANNELS_UPSTREAM
+        bool "Sweep only channels 11, 6, and 1 (upstream)"
+        default n
+        help
+            Off: sweep every channel the country allows (1-11 by default,
+            1-13 in most of the world), highest first. Flock cameras probe
+            on every channel as they step through them, but their own
+            traffic and SoftAP sit on whatever channel their network uses.
+            On: upstream flock-you's three non-overlapping channels, which
+            return to each channel sooner but never hear the others.
+
+    config FY_WIFI_DWELL_MS
+        int "Time on each Wi-Fi channel (ms)"
+        default 250
+        range 100 1000
+        help
+            250 ms is two of the cameras' observed 125 ms channel steps,
+            as upstream uses. A full sweep of 11 channels takes 2.75 s.
+
+endmenu
+
 menu "Detector signatures"
 
     config FY_SIG_MOTOROLA
