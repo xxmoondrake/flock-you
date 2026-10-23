@@ -5,7 +5,7 @@ menu "Detector Wi-Fi dashboard"
         default y if FY_BOARD_HELTEC_V43
         default n
         help
-            A WPA3 access point serving the status page, started from the
+            A WPA3 access point serving the dashboard, started from the
             Device menu (or, on boards without a display, by five quick
             button presses). Detection is paused while it runs. The XIAO
             uses its USB dashboard instead.
@@ -28,6 +28,15 @@ menu "Detector Wi-Fi dashboard"
             characters. Anyone who knows a shared passkey can join any
             device built with it while that device's dashboard is on.
 
+    config FY_DASHBOARD_PASSWORD
+        string "Default dashboard password"
+        default "changeme"
+        help
+            Every device starts with this password for the USB and Wi-Fi
+            dashboards (8-64 characters). The first login with it leads to
+            a page that requires a new password before anything else opens;
+            the new one is stored on the device as a salted PBKDF2 hash.
+
     config FY_DASHBOARD_CHANNEL
         int "Access point channel"
         default 6
@@ -38,24 +47,36 @@ menu "Detector Wi-Fi dashboard"
         default 600
         range 60 3600
         help
-            A session ends when nobody has pressed the button or loaded the
-            status page for this long. Detection then resumes in the selected
-            mode. The page does not refresh by itself, so an open browser
-            tab does not keep the session alive.
+            A session ends when nobody has pressed the button or used the
+            dashboard for this long. Detection then resumes in the selected
+            mode. The page's own background checks do not count, so an
+            open browser tab does not keep the session alive.
 
     config FY_DASHBOARD_CAPTIVE_PORTAL
         bool "Present the dashboards as a captive portal"
         default y
         help
-            Phones open the status page in their "sign in to network"
+            Phones open the dashboard in their "sign in to network"
             window, without turning off mobile data. The dashboard networks'
             DHCP servers also offer the device as gateway and DNS server, a
             DNS server answers every name with the device's address, and the
-            HTTP server redirects everything except the status page there,
+            HTTP server redirects everything except the dashboard there,
             including operating systems' connectivity checks, which do not
             count as dashboard activity. A PC on the USB link therefore also
             gets a default route and DNS server there (normally outranked by
             its other connections). Off: the networks offer an address only,
             and Android reaches the page only with mobile data and Wi-Fi off.
+
+    config FY_DASHBOARD_HOST
+        string "Dashboard host name"
+        default "dash.fy"
+        depends on FY_DASHBOARD_CAPTIVE_PORTAL
+        help
+            A name for the dashboard on a phone connected to the device:
+            the portal's DNS answers it (like every name) with the device's
+            address, and the server treats it as the device, so
+            http://dash.fy/ opens the dashboard. Computers that ask their
+            own DNS servers first may not resolve it; the address always
+            works.
 
 endmenu

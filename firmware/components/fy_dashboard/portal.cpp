@@ -74,15 +74,35 @@ size_t build_dns_reply(const uint8_t *q, size_t len, const uint8_t ipv4[4], uint
   return reply_len;
 }
 
-Route route_request(const char *host, const char *path, const char *local_ip) {
-  if (host && *host && local_ip) {
-    const size_t ip_len = strlen(local_ip);
-    const bool to_device =
-        strncmp(host, local_ip, ip_len) == 0 && (host[ip_len] == '\0' || host[ip_len] == ':');
-    if (!to_device) return Route::Redirect;
+bool host_is(const char *host, const char *name) {
+  if (!host || !name || !*name) return false;
+  size_t i = 0;
+  for (; name[i]; i++) {
+    const char a = host[i] >= 'A' && host[i] <= 'Z' ? static_cast<char>(host[i] + 32) : host[i];
+    const char b = name[i] >= 'A' && name[i] <= 'Z' ? static_cast<char>(name[i] + 32) : name[i];
+    if (a != b) return false;
   }
-  const bool root = path && path[0] == '/' && (path[1] == '\0' || path[1] == '?');
-  return root ? Route::Page : Route::Redirect;
+  return host[i] == '\0' || host[i] == ':';
+}
+
+Route route_request(const char *host, const char *path, const char *local_ip, const char *name) {
+  if (host && *host && !host_is(host, local_ip) && !host_is(host, name)) return Route::Redirect;
+  return is_dashboard_path(path) ? Route::Page : Route::Redirect;
+}
+
+bool is_dashboard_path(const char *path) {
+  if (!path || path[0] != '/') return false;
+  const size_t len = strcspn(path, "?");
+  static const char *const kExact[] = {"/", "/login", "/logout", "/password", "/app.js", "/app.css"};
+  for (const char *p : kExact) {
+    if (strlen(p) == len && strncmp(path, p, len) == 0) return true;
+  }
+  static const char *const kPrefixes[] = {"/api/", "/export/"};
+  for (const char *p : kPrefixes) {
+    const size_t n = strlen(p);
+    if (len > n && strncmp(path, p, n) == 0) return true;
+  }
+  return false;
 }
 
 }  // namespace fy::portal

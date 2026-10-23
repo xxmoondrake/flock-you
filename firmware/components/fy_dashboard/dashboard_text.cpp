@@ -2,9 +2,9 @@
 
 #include "fy_dashboard_text.h"
 
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
+
+#include "writer.h"
 
 namespace fy::dashboard {
 namespace {
@@ -13,39 +13,29 @@ constexpr unsigned kSymbols = sizeof(kAlphabet) - 1;
 // Bytes at or above this would favour the first symbols; they are redrawn.
 constexpr unsigned kRejectFrom = 256 - 256 % kSymbols;
 
-// Appends formatted text, tracking overflow instead of truncating silently.
-struct Writer {
-  char *out;
-  size_t cap;
-  size_t len = 0;
-  bool overflow = false;
+void page_start(Writer &w, const char *title) {
+  w.add(
+      "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+      "<title>%s</title><style>"
+      ":root{color-scheme:light dark;--fg:#1d2329;--bg:#f6f7f8;--card:#fff;--line:#d5d9dd;"
+      "--accent:#c62828;--muted:#5d6670}"
+      "@media(prefers-color-scheme:dark){:root{--fg:#e6e8ea;--bg:#15181b;--card:#1f2327;"
+      "--line:#363c42;--accent:#ef5350;--muted:#9aa3ab}}"
+      "body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}"
+      "main{max-width:24rem;margin:10vh auto 0;padding:0 16px}"
+      "form{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}"
+      "label{display:block;margin:12px 0 4px;font-weight:600}label:first-child{margin-top:0}"
+      "input{box-sizing:border-box;width:100%%;padding:10px;font:inherit;border:1px solid "
+      "var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}"
+      "button{margin-top:16px;width:100%%;padding:10px;font:inherit;font-weight:600;border:0;"
+      "border-radius:6px;background:var(--accent);color:#fff}"
+      ".err{color:var(--accent);font-weight:600}.note{color:var(--muted);font-size:14px}"
+      "a{color:inherit}</style></head><body><main><h1>%s</h1>",
+      title, title);
+}
 
-  void add(const char *fmt, ...) {
-    if (overflow) return;
-    va_list args;
-    va_start(args, fmt);
-    const int n = vsnprintf(out + len, cap - len, fmt, args);
-    va_end(args);
-    if (n < 0 || static_cast<size_t>(n) >= cap - len) {
-      overflow = true;
-      return;
-    }
-    len += static_cast<size_t>(n);
-  }
-
-  // Appends text with the HTML-special characters escaped.
-  void add_escaped(const char *text) {
-    for (const char *p = text; *p && !overflow; p++) {
-      switch (*p) {
-        case '<': add("&lt;"); break;
-        case '>': add("&gt;"); break;
-        case '&': add("&amp;"); break;
-        case '"': add("&quot;"); break;
-        default: add("%c", *p); break;
-      }
-    }
-  }
-};
+void page_end(Writer &w) { w.add("</main></body></html>"); }
 
 }  // namespace
 
@@ -79,89 +69,105 @@ bool make_ssid(const char *prefix, RandomByte next, void *ctx, char *out, size_t
   return true;
 }
 
-size_t render_status_page(const StatusPage &p, char *out, size_t cap) {
+// ---- Pages ---------------------------------------------------------------------------
+
+size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap) {
   if (!out || cap == 0) return 0;
   Writer w{out, cap};
+  page_start(w, "Detector");
+  switch (notice) {
+    case LoginNotice::Failed: w.add("<p class=\"err\">Wrong password.</p>"); break;
+    case LoginNotice::Wait:
+      w.add("<p class=\"err\">Too many wrong passwords. Try again in %lu s.</p>",
+            static_cast<unsigned long>(wait_s));
+      break;
+    case LoginNotice::LoggedOut: w.add("<p>Logged out.</p>"); break;
+    case LoginNotice::Expired: w.add("<p>Your session ended. Log in again.</p>"); break;
+    default: break;
+  }
   w.add(
-      "<!doctype html><html><head><meta charset=\"utf-8\">"
-      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-      "<title>Detector status</title><style>"
-      "body{font-family:sans-serif;margin:16px;max-width:36em}"
-      "table{border-collapse:collapse}td,th{padding:2px 10px 2px 0;text-align:left}"
-      ".note{color:#555}</style></head><body><h1>Detector status</h1>");
-  if (p.detection_paused) {
+      "<form method=\"post\" action=\"/login\"><label for=\"pw\">Password</label>"
+      "<input id=\"pw\" name=\"password\" type=\"password\" autocomplete=\"current-password\" "
+      "required autofocus><button type=\"submit\">Log in</button></form>"
+      "<p class=\"note\">The same password opens the USB and Wi-Fi dashboards.</p>");
+  page_end(w);
+  return w.finish();
+}
+
+size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  Writer w{out, cap};
+  page_start(w, first_login ? "Set a new password" : "Change password");
+  if (first_login) {
     w.add(
-        "<p><b>Detection is paused</b> while the Wi-Fi dashboard is on. It resumes when the "
-        "dashboard is stopped on the device or after %u minutes without use.</p>",
-        static_cast<unsigned>(p.idle_minutes));
-  } else {
-    w.add("<p>Detection is running.</p>");
+        "<p>This detector still has the default password. Choose a new one to continue; it "
+        "replaces the default for both the USB and Wi-Fi dashboards.</p>");
   }
+  if (problem && *problem) {
+    w.add("<p class=\"err\">");
+    w.add_html(problem);
+    w.add("</p>");
+  }
+  w.add("<form method=\"post\" action=\"/password\">");
+  if (!first_login) {
+    w.add(
+        "<label for=\"cur\">Current password</label><input id=\"cur\" name=\"current\" "
+        "type=\"password\" autocomplete=\"current-password\" required>");
+  }
+  w.add(
+      "<label for=\"new\">New password</label><input id=\"new\" name=\"new\" type=\"password\" "
+      "autocomplete=\"new-password\" minlength=\"8\" maxlength=\"64\" required%s>"
+      "<label for=\"conf\">Confirm new password</label><input id=\"conf\" name=\"confirm\" "
+      "type=\"password\" autocomplete=\"new-password\" minlength=\"8\" maxlength=\"64\" required>"
+      "<button type=\"submit\">Save password</button></form>"
+      "<p class=\"note\">8 to 64 characters.</p>",
+      first_login ? " autofocus" : "");
+  if (!first_login) w.add("<p><a href=\"/\">Back to the dashboard</a></p>");
+  page_end(w);
+  return w.finish();
+}
 
-  w.add("<p>Battery: ");
-  if (!p.battery_available) {
-    w.add("not measured on this board");
-  } else if (!p.battery_valid) {
-    w.add("no reading");
-  } else {
-    w.add("%u%% (%u.%02u V)", static_cast<unsigned>(p.battery_percent), p.battery_mv / 1000u,
-          (p.battery_mv % 1000u) / 10u);
-  }
-  w.add("<br>GPS: ");
-  if (!p.gps_available) {
-    w.add("none");
-  } else if (!p.gps_fix) {
-    w.add("no fix");
-  } else {
-    w.add("%s fix, %u satellites", p.fix_type == 3 ? "3D" : "2D",
-          static_cast<unsigned>(p.satellites));
-  }
-  w.add("<br>Matches reported: %lu (specific %lu)</p>", static_cast<unsigned long>(p.reported),
-        static_cast<unsigned long>(p.reported_specific));
+// ---- Status --------------------------------------------------------------------------
 
-  w.add("<h2>Detections</h2>");
-  if (p.row_count <= 0) {
-    w.add("<p>No detections yet.</p>");
+size_t format_status_json(const Status &s, char *out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  Writer w{out, cap};
+  w.add("{\"board\":");
+  w.add_json_string(s.board ? s.board : "");
+  w.add(
+      ",\"uptime_s\":%lu,\"dashboard\":\"%s\",\"detection_paused\":%s,\"idle_minutes\":%u,"
+      "\"passkey_temporary\":%s",
+      static_cast<unsigned long>(s.uptime_s), s.wifi_session ? "wifi" : "usb",
+      s.detection_paused ? "true" : "false", static_cast<unsigned>(s.idle_minutes),
+      s.passkey_temporary ? "true" : "false");
+  w.add(",\"battery\":");
+  if (s.battery_available && s.battery_valid) {
+    w.add("{\"mv\":%u,\"percent\":%u}", static_cast<unsigned>(s.battery_mv),
+          static_cast<unsigned>(s.battery_percent));
   } else {
-    w.add("<table><tr><th>Device type</th><th>This session</th><th>Stored</th></tr>");
-    for (int i = 0; i < p.row_count; i++) {
-      w.add("<tr><td>");
-      w.add_escaped(p.rows[i].name ? p.rows[i].name : "");
-      w.add("</td><td>%u</td><td>%u</td></tr>", static_cast<unsigned>(p.rows[i].session),
-            static_cast<unsigned>(p.rows[i].stored));
-    }
-    w.add("</table>");
-    if (p.counts_saturated) w.add("<p class=\"note\">Counts are lower bounds.</p>");
-    w.add("<p class=\"note\">Types ending in ? rest on broad identifiers.</p>");
+    w.add("null");
   }
-
-  w.add("<h2>Storage</h2><p>");
-  if (p.storage_available) {
-    w.add("%u%% used (%lu of %lu records)", static_cast<unsigned>(p.storage_percent),
-          static_cast<unsigned long>(p.records_used),
-          static_cast<unsigned long>(p.records_capacity));
+  w.add(",\"gps\":");
+  if (!s.gps_available) {
+    w.add("null");
   } else {
-    w.add("unavailable");
+    w.add("{\"fix\":%s,\"fix_type\":%u,\"satellites\":%u}", s.gps_fix ? "true" : "false",
+          static_cast<unsigned>(s.fix_type), static_cast<unsigned>(s.satellites));
   }
-  const uint32_t hours = p.uptime_s / 3600;
-  w.add("<br>Uptime: %luh %02lum</p>", static_cast<unsigned long>(hours),
-        static_cast<unsigned long>((p.uptime_s / 60) % 60));
-
-  w.add("<p class=\"note\">Read-only. This page does not refresh by itself; reload it to "
-        "update.");
-  if (p.passkey_shared) {
-    w.add(" The Wi-Fi passkey is the shared one built into this firmware; anyone who knows it "
-          "can join while the dashboard is on.");
-  } else if (p.passkey_temporary) {
-    w.add(" The Wi-Fi passkey is still the generated one shown on the device.");
+  w.add(",\"matches\":{\"reported\":%lu,\"specific\":%lu}",
+        static_cast<unsigned long>(s.reported), static_cast<unsigned long>(s.reported_specific));
+  w.add(",\"storage\":");
+  if (!s.storage_available) {
+    w.add("null");
+  } else {
+    w.add("{\"percent\":%u,\"used\":%lu,\"capacity\":%lu,\"encounter_records\":%lu}",
+          static_cast<unsigned>(s.storage_percent), static_cast<unsigned long>(s.records_used),
+          static_cast<unsigned long>(s.records_capacity),
+          static_cast<unsigned long>(s.encounter_records));
   }
-  w.add("</p></body></html>");
-
-  if (w.overflow) {
-    out[0] = '\0';
-    return 0;
-  }
-  return w.len;
+  w.add(",\"record_seq\":%lu,\"phone\":{\"time\":%s}}",
+        static_cast<unsigned long>(s.record_seq), s.phone_time ? "true" : "false");
+  return w.finish();
 }
 
 }  // namespace fy::dashboard

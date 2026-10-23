@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// The status page's HTTP server, shared by the Wi-Fi access point and the USB
+// The dashboard's HTTP server, shared by the Wi-Fi access point and the USB
 // dashboard. It runs while either needs it. C-compatible for fy_usb.
 
 #pragma once

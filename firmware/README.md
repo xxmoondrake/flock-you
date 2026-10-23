@@ -4,8 +4,8 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 | Environment | Board | Status |
 | --- | --- | --- |
-| `xiao_esp32s3` | Seeed Studio XIAO ESP32S3 | Runs. USB dashboard (with captive portal) and USB console over its native USB port; no Wi-Fi dashboard; status LED on GPIO21; no display. GPS disabled until a breakout's wiring and supply are confirmed. |
-| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. Four OLED screens with button navigation, scanning and standby modes, a Wi-Fi dashboard and an optional USB dashboard (both with captive portal), battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
+| `xiao_esp32s3` | Seeed Studio XIAO ESP32S3 | Runs. Browser dashboard (login, detection list, map, export) and USB console over its native USB port; no Wi-Fi dashboard; status LED on GPIO21; no display. GPS disabled until a breakout's wiring and supply are confirmed. |
+| `heltec_v43` | Heltec WiFi LoRa 32 V4.3 (standard V4: ESP32-S3R2, 16 MB flash, native USB) | Runs. Four OLED screens with button navigation, scanning and standby modes, the browser dashboard over Wi-Fi or USB, battery monitoring and protection, recording, and the L76K GNSS receiver (NMEA on GPIO39; GPS, BeiDou, and GLONASS enabled). Pin sources are in `board_heltec_v43.cpp`. |
 
 ## Behavior
 
@@ -31,13 +31,25 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 **Modes.** Every boot starts in **Scanning**. **Standby** keeps the board on with Wi-Fi and BLE detection stopped; GPS, recording, and the battery monitor keep running. The Home screen's capture row turns inverted in standby and during a dashboard session, so it never implies detection that is not running.
 
-**Wi-Fi dashboard (minimal).** Starting it from the Device menu pauses Wi-Fi and BLE detection and turns the Wi-Fi radio into a WPA3-Personal access point (SAE only, protected management frames required, at most 2 clients) serving a read-only status page at `http://192.168.4.1/`: battery, GPS fix state, match counts, detections by type, and storage. The page has no location, scripts, or automatic refresh. The SSID and a temporary passkey are generated per device on first use from the hardware RNG and kept in NVS; the passkey is never logged. A session ends when stopped from the menu, after 10 minutes without a button press or page load, or on reboot, and the selected mode then resumes. Ending a session also releases the access point's network interface and DHCP server; only lwIP's core thread stays, since ESP-IDF cannot shut it down once started. Changing the passkey, HTTPS, login, and export belong to the planned full dashboard. On recent Android versions the browser asks once for the "Nearby devices" permission before it can open a local address such as the status page.
+**Dashboard.** A browser app served by the device over USB or Wi-Fi (below), behind a login on both:
+- **Login.** Every device starts with the build-time default password (`FY_DASHBOARD_PASSWORD`, `changeme`). The first login with it opens a page that asks for a new password twice; nothing else opens until it is replaced. The new password (8-64 characters) is stored in NVS as a salted PBKDF2-HMAC-SHA256 hash (10,000 iterations); later changes need the current password and log out other browsers. Sessions are random 128-bit cookies held in RAM (30 minutes idle, 12 hours at most, cleared on reboot). After five wrong passwords in a row, each further attempt waits 5 s, doubling up to 5 minutes. Pages are plain HTTP, so the login protects the history from someone who joins the link, not from someone who can read its traffic; the links themselves are WPA3 or a USB cable. HTTPS was built and dropped (2026-10-23): Android's sign-in window refuses a certificate the device signs itself, and no public authority can sign one for it.
+- **Detections.** One row per address, most recently updated first, with type, match strength (specific if any of its detections was), address, advertised name, number of detections (stored encounters) and sightings, last time seen, and strongest signal. Bluetooth devices that change their address appear once per address. Search (address, name, type, vendor, or note) and a filter (specific, possible, or by your label) narrow the list; selecting a row shows its details and every detection of the address. Times are local times from GPS time or a dashboard phone's clock, or the time since that boot when there was neither.
+- **Notes and ignored addresses.** Each address can carry a label (confirmed or false positive), a short note (63 printable ASCII characters), and an ignore flag; choosing the false-positive label ticks ignore, which can be unticked before saving. Ignored addresses are left off the list, map, GPX, and downloads, and raise no alerts, unless asked for; the detector still records them. The Device tab lists ignored addresses with a way to stop ignoring each. Notes are kept in NVS for up to 64 addresses (`/api/notes`) and appear in the exports.
+- **Live updates.** While the page is on screen it checks the device's status every 5 s (paused while hidden) and, when new records were written, fetches only the encounters updated since its last fetch (`/api/detections?since=N`, with the next N in the `X-FY-Next-Seq` header). New detections, and detections that become specific matches, show a banner, add a count to the page title, and vibrate the phone where the browser allows it. These requests are marked as background ones: they keep neither a Wi-Fi session nor the login alive, so an unattended page still logs out after 30 minutes.
+- **The phone's clock.** The page sends the phone's clock when it opens, and the recorder uses it for detections without GPS time until reboot, so a XIAO without GPS still records dates and times. Positions come only from the detector's own GPS: browsers share the phone's location only with HTTPS pages.
+- **Map.** A red dot per row with a position, at the detector's own position at the strongest sighting (hollow for a stale fix), on a plain grid with a scale bar. There are no map tiles: the detector stores none, and a phone on its network has no internet path to fetch them (the detector is its gateway and DNS). An optional track joins the detector's own positions at its sightings in time order (it records its position only when it detects something), breaking at gaps over 10 minutes and at reboots. Each dot is its own element so it can later be dragged to correct a position. **Open in maps app** in a row's details drops a labelled pin there (a `geo:` link, or Apple Maps on iOS).
+- **Export.** CSV and JSON downloads of every stored detection event (`/export/detections.csv`, `.json`) with times in UTC, the detector's position at the first, last, and strongest sighting (with its source and HDOP), and the owner's notes; ignored addresses are left out unless `?ignored=1` (an Export tab option). Exporting deletes nothing. A GPX download, built in the browser, has one pin per address for offline map apps such as Organic Maps and OsmAnd, which show them on their own downloaded maps. Advertised names are escaped for JSON, and CSV fields that a spreadsheet would run as formulas are prefixed with an apostrophe. Phone sign-in windows may not download files; open the address in the browser instead.
+- **Device.** Board, detection state, battery, GPS, the phone's clock, storage, and uptime; the vibration setting; ignored addresses; changing the password; logging out.
+
+The device streams the log newest sector first, one 4 KB sector at a time so the recorder is never held up, and sends each encounter's current snapshot only; the phone or computer builds the list and map. Forgotten password: erase the NVS partition (`esptool.py --chip esp32s3 erase_region 0x9000 0x6000`). That restores the default password and also replaces the Wi-Fi SSID and passkey, and the notes on addresses; records are kept.
+
+**Wi-Fi dashboard (Heltec).** Starting it from the Device menu pauses Wi-Fi and BLE detection and turns the Wi-Fi radio into a WPA3-Personal access point (SAE only, protected management frames required, at most 2 clients) serving the dashboard at `http://192.168.4.1/`. The SSID and a temporary passkey are generated per device on first use from the hardware RNG and kept in NVS; the passkey is never logged. A session ends when stopped from the menu, after 10 minutes without a button press or dashboard request, or on reboot, and the selected mode then resumes. Ending a session also releases the access point's network interface and DHCP server; only lwIP's core thread stays, since ESP-IDF cannot shut it down once started. On recent Android versions the browser asks once for the "Nearby devices" permission before it can open a local address such as the dashboard.
 
 The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB. A board without a display that enables it starts and stops it with five quick presses of its button (each under 0.5 s, under 1 s apart) and uses a shared passkey set at build time (`FY_DASHBOARD_PASSKEY`), since there is no screen to show a generated one; anyone who knows a shared passkey can join while the dashboard is on.
 
-**USB dashboard.** The native USB port becomes a composite device: a CDC-ACM serial port that carries the console, and a CDC-NCM network adapter (Windows 11, Linux, Android, and iOS include a driver). The device is `192.168.7.1`, and the same read-only status page is served at `http://192.168.7.1/`. Detection keeps running, and there is no inactivity timeout. The XIAO runs it from boot; the Heltec starts it from the Device menu, and its USB-C port returns to the USB Serial/JTAG console when it stops. Boot logs before the switch go to USB Serial/JTAG; panic output after it is not visible over USB.
+**USB dashboard.** The native USB port becomes a composite device: a CDC-ACM serial port that carries the console, and a CDC-NCM network adapter (Windows 11, Linux, Android, and iOS include a driver). The device is `192.168.7.1`, and the dashboard is served at `http://192.168.7.1/`. Detection keeps running, and there is no inactivity timeout. The XIAO runs it from boot; the Heltec starts it from the Device menu, and its USB-C port returns to the USB Serial/JTAG console when it stops. Boot logs before the switch go to USB Serial/JTAG; panic output after it is not visible over USB.
 
-**Captive portal (default, `FY_DASHBOARD_CAPTIVE_PORTAL`).** Both dashboard networks offer the device as gateway and DNS server, a DNS server answers every name with the device's address, and everything except the status page redirects to it, including the connectivity checks Android, iOS, and Windows make (which do not count as Wi-Fi session activity). Android then opens the page in its "sign in to network" window with mobile data on; iOS reaches it in the browser over USB, and through the portal over Wi-Fi. A PC on the USB link also gets a default route and DNS server there, normally outranked by its other connections; turn the option off for development use if that matters.
+**Captive portal (default, `FY_DASHBOARD_CAPTIVE_PORTAL`).** Both dashboard networks offer the device as gateway and DNS server, a DNS server answers every name with the device's address, and everything except the dashboard redirects to it, including the connectivity checks Android, iOS, and Windows make (which do not count as Wi-Fi session activity). Android then opens the dashboard in its "sign in to network" window with mobile data on, and `http://dash.fy/` (`FY_DASHBOARD_HOST`) reaches it wherever name lookups go to the device (a PC that asks its own DNS servers first may not resolve it; the address always works); iOS reaches it in the browser over USB, and through the portal over Wi-Fi. A PC on the USB link also gets a default route and DNS server there, normally outranked by its other connections; turn the option off for development use if that matters.
 
 **Status LED.** Solid while booting, one short blink every 3 s while scanning, one every 10 s in standby, and a double blink every 3 s while the Wi-Fi dashboard runs. Default on the XIAO; the Heltec uses its LED only for match flashes.
 
@@ -68,23 +80,25 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 | `FY_DASHBOARD_SSID_PREFIX` | `FY-` | Access point name prefix; four random characters follow |
 | `FY_DASHBOARD_CHANNEL` | 6 | Access point channel |
 | `FY_DASHBOARD_IDLE_S` | 600 | End a dashboard session after this long without use |
+| `FY_DASHBOARD_PASSWORD` | `changeme` | Default dashboard password, replaced at first login |
 | `FY_DASHBOARD_PASSKEY` | empty | Shared Wi-Fi passkey for boards without a display; empty generates one per device |
-| `FY_USB_DASHBOARD` | on (both boards enable TinyUSB NCM and CDC) | USB console and USB network status page |
+| `FY_USB_DASHBOARD` | on (both boards enable TinyUSB NCM and CDC) | USB console and dashboard over USB networking |
 | `FY_USB_DASHBOARD_AT_BOOT` | XIAO only | Start the USB dashboard at boot instead of from the Device menu |
 | `FY_WIFI_DASHBOARD` | Heltec only | Offer the Wi-Fi dashboard |
 | `FY_DASHBOARD_CAPTIVE_PORTAL` | on | Present the dashboards as a captive portal |
+| `FY_DASHBOARD_HOST` | `dash.fy` | A name the portal's DNS answers for the dashboard (`http://dash.fy/`) |
 
 ## Planned
 
 - Field validation of the reviewed signatures and a review of the legacy flocker rules. 5 GHz coverage would need a different chip (an ESP32-C5, for example).
-- Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing.
-- GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
+- Dashboard: clearing records, changing the Wi-Fi passkey, password recovery that erases history, and dragging a map dot to correct a detection's position.
+- GPS on the XIAO via an external NMEA receiver.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.
 - Battery cutoff and start thresholds revisited against the measured curve, and the divider checked with a multimeter.
 
 ## Reading stored records
 
-With USB access, dump the partition and decode it. A full 4 MB read takes about 6 minutes over native USB; if the log has not wrapped, the first `records × 128` bytes (rounded up to 4 KB; the record count is in the recorder status line) are enough.
+The dashboard's Export tab downloads every detection as CSV or JSON. Without the dashboard, dump the partition over USB and decode it. A full 4 MB read takes about 6 minutes over native USB; if the log has not wrapped, the first `records × 128` bytes (rounded up to 4 KB; the record count is in the recorder status line) are enough.
 
 ```bash
 esptool.py --chip esp32s3 --port <PORT> read_flash 0x310000 0x400000 obslog.bin
@@ -115,7 +129,7 @@ Each reported match is also printed as one JSON line in upstream's format, so th
 
 `strength` is the match's own: a watchlist OUI reports its vendor's label.
 
-The firmware does not read dashboard commands. It has no buzzer for the beep controls, and it does not dump stored records over serial (`dump_session`), because export is planned for the authenticated dashboard; read records with esptool as above.
+The firmware does not read dashboard commands. It has no buzzer for the beep controls, and it does not dump stored records over serial (`dump_session`), because export belongs to the authenticated dashboard (or esptool, as above).
 
 ## Layout
 
@@ -131,11 +145,11 @@ The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds t
 | `components/fy_ui` | Screen layouts and navigation, display and button task | Layouts, navigation |
 | `components/fy_status_led` | LED patterns, LED task | Patterns |
 | `components/fy_device` | Mode and dashboard-session logic, device task applying it to the radios and LED | Mode logic |
-| `components/fy_dashboard` | Credentials and status page, WPA3 access point and HTTP server | Credentials, page |
+| `components/fy_dashboard` | Login, pages, exports, notes, captive portal, the web app (`web/`), WPA3 access point and HTTP server | Login, pages, exports, notes, portal |
 | `components/fy_usb` | Composite USB device (CDC-ACM console, CDC-NCM network), bootloader reboot on a 1200-baud touch | |
 | `src/idf_component.yml`, `dependencies.lock` | `espressif/esp_tinyusb` pinned to 2.4.0 (with `espressif/tinyusb` 0.21.0~2), fetched from the ESP Component Registry on first build | |
 | `components/fy_battery` | Voltage-to-percent estimate, measurement driver | Estimate |
-| `components/fy_store` | Record format, power-loss-tolerant ring log, encounter grouping | All |
+| `components/fy_store` | Record format, power-loss-tolerant ring log, encounter grouping, reading encounters back | All |
 | `components/fy_recorder` | Writes encounters (and optional battery samples) to `obslog` | |
 | `tools/read_obslog.py` | Decodes an `obslog` dump to CSV | |
 | `src/main.cpp` | Startup | |
@@ -144,7 +158,7 @@ The host-tested parts are pure C++ with no ESP-IDF dependencies; `test/` holds t
 
 ## Build and flash
 
-Requires PlatformIO Core; the pinned platform downloads ESP-IDF 6.0.1 and its toolchain on first build. The repository path must not contain spaces: ESP-IDF's `-fmacro-prefix-map` argument breaks, and directory junctions don't help because the path is resolved. Each environment's resolved configuration is kept in a generated `sdkconfig.<env>`, which wins over `sdkconfig.defaults*` and Kconfig defaults; after changing either, delete that file (and `.pio/build/<env>/CMakeCache.txt`) so it is regenerated.
+Requires PlatformIO Core; the pinned platform downloads ESP-IDF 6.0.1 and its toolchain on first build. The repository path must not contain spaces: ESP-IDF's `-fmacro-prefix-map` argument breaks, and directory junctions don't help because the path is resolved. Each environment's resolved configuration is kept in a generated `sdkconfig.<env>`, which wins over `sdkconfig.defaults*` and Kconfig defaults; after changing either, delete that file (and `.pio/build/<env>/CMakeCache.txt`) so it is regenerated. The web app's files are listed twice: as `EMBED_FILES` in the component's CMakeLists and as `board_build.embed_files` in `platformio.ini`, which PlatformIO needs as well.
 
 ```bash
 pio run -e xiao_esp32s3                    # or heltec_v43

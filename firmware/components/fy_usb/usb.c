@@ -183,9 +183,9 @@ esp_err_t fy_usb_start(void)
     memcpy(net.mac_addr, host_mac, sizeof(net.mac_addr));
     ESP_RETURN_ON_ERROR(tinyusb_net_init(&net), TAG, "net_init");
     ESP_RETURN_ON_ERROR(start_netif(device_mac), TAG, "netif");
-    ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "status page");
+    ESP_RETURN_ON_ERROR(fy_dashboard_page_start(), TAG, "dashboard");
 
-    ESP_LOGI(TAG, "USB console and network up; status page http://" FY_USB_ADDRESS "/");
+    ESP_LOGI(TAG, "USB console and network up; dashboard http://" FY_USB_ADDRESS "/");
     return ESP_OK;
 }
 

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detector</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <h1>Detector</h1>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" data-view="list" aria-selected="true">Detections</button>
+    <button type="button" role="tab" data-view="map" aria-selected="false">Map</button>
+    <button type="button" role="tab" data-view="export" aria-selected="false">Export</button>
+    <button type="button" role="tab" data-view="device" aria-selected="false">Device</button>
+  </nav>
+</header>
+
+<main>
+  <p id="offline" class="offline" role="status" hidden>Not connected to the detector. Retrying…</p>
+  <section id="view-list" class="view">
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search address, name, type, or note" aria-label="Search">
+      <select id="filter" aria-label="Show">
+        <option value="all">All</option>
+        <option value="specific">Specific</option>
+        <option value="possible">Possible</option>
+        <option value="confirmed">Labelled confirmed</option>
+        <option value="false_positive">Labelled false positive</option>
+      </select>
+      <button id="refresh" type="button">Refresh</button>
+      <label class="check"><input type="checkbox" id="show-ignored"> Show ignored</label>
+    </div>
+    <p id="summary" class="muted" aria-live="polite">Loading detections…</p>
+    <div class="split">
+      <ul id="rows" class="rows" role="listbox" aria-label="Detections"></ul>
+      <aside id="detail" class="detail" hidden aria-label="Detection details"></aside>
+    </div>
+    <button id="more" type="button" class="more" hidden>Show more</button>
+  </section>
+
+  <section id="view-map" class="view" hidden>
+    <div id="map" class="map" aria-label="Map of detections">
+      <div class="map-tiles"></div>
+      <canvas class="map-track" aria-hidden="true"></canvas>
+      <div class="map-dots"></div>
+      <div class="map-zoom">
+        <button type="button" data-zoom="1" aria-label="Zoom in">+</button>
+        <button type="button" data-zoom="-1" aria-label="Zoom out">−</button>
+        <button type="button" data-zoom="fit" aria-label="Show all detections">⤢</button>
+      </div>
+      <div id="map-popup" class="map-popup" hidden></div>
+      <div class="map-scale"><span></span></div>
+    </div>
+    <p id="map-note" class="muted"></p>
+    <label class="check"><input type="checkbox" id="track"> Detector's track: its own GPS positions at each detection, joined in time order. The detector records its position only when it detects something, so gaps are straight lines or missing.</label>
+    <p class="muted">The map has no streets: the detector stores none, and a phone on its network cannot fetch them. For a street map, open a detection in your maps app or load the GPX file from the Export tab into an offline map app.</p>
+  </section>
+
+  <section id="view-export" class="view" hidden>
+    <h2>Export detections</h2>
+    <p>Every stored detection event, newest first: address, type, match strength, sighting count, signal range, times in UTC, the detector's own position at the first, last, and strongest sighting, and your notes. Exporting does not delete anything.</p>
+    <label class="check"><input type="checkbox" id="export-ignored"> Include addresses you ignore</label>
+    <p class="actions">
+      <a id="csv" class="button" href="/export/detections.csv" download>Download CSV</a>
+      <a id="json" class="button" href="/export/detections.json" download>Download JSON</a>
+    </p>
+    <h2>Pins for a map app</h2>
+    <p>A GPX file with one pin per address, at the detector's position at the strongest sighting. Offline map apps such as Organic Maps and OsmAnd open it on their own downloaded maps, with no internet needed.</p>
+    <p class="actions"><button id="gpx" type="button" class="plain">Download GPX</button></p>
+    <p id="gpx-note" class="muted" aria-live="polite"></p>
+    <p class="muted">If nothing downloads, the window you are in may not allow downloads (phone sign-in windows often do not). Open this address in the browser instead.</p>
+  </section>
+
+  <section id="view-device" class="view" hidden>
+    <h2>Status</h2>
+    <dl id="status" class="status"></dl>
+    <h2>This phone</h2>
+    <p class="muted">While this page is open, detections the detector cannot time from GPS take their time from this phone's clock.</p>
+    <label class="check"><input type="checkbox" id="vibrate"> Vibrate for new detections, where the browser allows it</label>
+    <h2>Ignored addresses</h2>
+    <p class="muted">Left off the list, map, and exports, with no alerts. The detector still records them. To ignore an address, open it in the Detections list; choosing the False positive label ignores it too.</p>
+    <p id="ignored-none" class="muted">None.</p>
+    <ul id="ignored" class="ignored-list"></ul>
+    <h2>Account</h2>
+    <p><a class="button" href="/password">Change password</a></p>
+    <form method="post" action="/logout"><button type="submit" class="plain">Log out</button></form>
+  </section>
+</main>
+<div id="alert" class="alert" role="alert" hidden></div>
+</body>
+</html>

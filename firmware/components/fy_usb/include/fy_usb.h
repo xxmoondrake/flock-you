@@ -2,7 +2,7 @@
 //
 // USB dashboard (boards built with CONFIG_FY_USB_DASHBOARD): a composite USB
 // device with a CDC-ACM serial port, which becomes the console, and a CDC-NCM
-// network interface serving the dashboard's status page. The XIAO starts it
+// network interface serving the dashboard. The XIAO starts it
 // at boot; the Heltec starts and stops it from its Device menu.
 
 #pragma once

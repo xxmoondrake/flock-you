@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Wi-Fi dashboard credentials and the read-only status page. Pure C++ with
-// no ESP-IDF dependencies so it can be tested on a host computer.
+// Dashboard text: Wi-Fi credentials, the login and change-password pages,
+// and the status as JSON. Pure C++ with no ESP-IDF dependencies so it can be
+// tested on a host computer.
 
 #pragma once
 
@@ -30,17 +31,35 @@ bool make_passkey(RandomByte next, void *ctx, char *out, size_t cap);
 // false when the result would not fit `cap` or a 32-byte SSID.
 bool make_ssid(const char *prefix, RandomByte next, void *ctx, char *out, size_t cap);
 
-struct PageRow {
-  const char *name;  // device type
-  bool possible;
-  uint16_t session;  // distinct devices this session
-  uint16_t stored;   // distinct devices in stored history
+// ---- Pages ---------------------------------------------------------------------------
+
+enum class LoginNotice : uint8_t {
+  None = 0,
+  Failed,     // wrong password
+  Wait,       // too many attempts; wait `wait_s`
+  LoggedOut,
+  Expired,    // the session ended (timeout or reboot)
 };
 
-struct StatusPage {
+// The login form, posting "password" to /login. Returns the length written,
+// or 0 (and an empty string) when `cap` is too small. Like every page here:
+// no scripts and no external resources.
+size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap);
+
+// The change-password form, posting "new" and "confirm" (and "current"
+// unless `first_login`) to /password. `first_login`: the default password is
+// still set and must be replaced before anything else. `problem` is shown as
+// an error when not empty.
+size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap);
+
+// ---- Status --------------------------------------------------------------------------
+
+struct Status {
+  const char *board;
   uint32_t uptime_s;
-  bool detection_paused;  // a Wi-Fi dashboard session is running
-  uint16_t idle_minutes;  // the session ends after this long without use
+  bool wifi_session;      // this request came over a Wi-Fi session (else USB)
+  bool detection_paused;  // a Wi-Fi session pauses detection
+  uint16_t idle_minutes;  // a Wi-Fi session ends after this long without use
 
   bool battery_available;
   bool battery_valid;
@@ -54,22 +73,21 @@ struct StatusPage {
 
   uint32_t reported;
   uint32_t reported_specific;
-  const PageRow *rows;
-  int row_count;
-  bool counts_saturated;
 
   bool storage_available;
   uint8_t storage_percent;
   uint32_t records_used;
   uint32_t records_capacity;
+  uint32_t encounter_records;
+  uint32_t record_seq;  // changes whenever a record is written
 
-  bool passkey_temporary;  // still the generated or built-in passkey
-  bool passkey_shared;     // the build-time passkey shared by devices without a display
+  bool passkey_temporary;  // the Wi-Fi passkey is still the generated one
+
+  bool phone_time;  // the clock has been set from a dashboard browser
 };
 
-// Renders the status page as a complete HTML document: no scripts, no
-// external resources, no automatic refresh, and no location. Returns the
-// length written, or 0 (and an empty string) when `cap` is too small.
-size_t render_status_page(const StatusPage &page, char *out, size_t cap);
+// The status as a JSON object (no location). Returns the length written, or
+// 0 when `cap` is too small.
+size_t format_status_json(const Status &status, char *out, size_t cap);
 
 }  // namespace fy::dashboard

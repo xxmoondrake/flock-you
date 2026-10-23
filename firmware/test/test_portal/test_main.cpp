@@ -114,17 +114,43 @@ void test_bad_packets_are_ignored() {
 
 void test_routing() {
   const char *ip = "192.168.7.1";
-  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/", ip));
-  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1:80", "/?r=1", ip));
-  TEST_ASSERT_EQUAL(Route::Page, route_request("", "/", ip));
-  TEST_ASSERT_EQUAL(Route::Page, route_request(nullptr, "/", ip));
+  const char *kName = "dash.fy";
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1:80", "/?r=1", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request(nullptr, "/", ip, kName));
   // Connectivity checks and other names or paths go to the page.
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("connectivitycheck.gstatic.com", "/generate_204", ip));
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/hotspot-detect.html", ip));
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("www.msftconnecttest.com", "/connecttest.txt", ip));
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/", ip));
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.10", "/", ip));  // prefix only
-  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.1", "/generate_204", ip));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("connectivitycheck.gstatic.com", "/generate_204", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/hotspot-detect.html", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("www.msftconnecttest.com", "/connecttest.txt", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.10", "/", ip, kName));  // prefix only
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.1", "/generate_204", ip, kName));
+  // The dashboard's own paths are served; look-alikes are not.
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/login", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/app.js?v=2", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/api/detections", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/export/detections.csv", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.1", "/api/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.1", "/login.php", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/login", ip, kName));
+  // The dashboard's host name counts as the device, in any case and with a port.
+  TEST_ASSERT_EQUAL(Route::Page, route_request("dash.fy", "/login", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("DASH.fy:443", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("dash.fyi", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("x.dash.fy", "/", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("dash.fy", "/generate_204", ip, kName));
+}
+
+void test_host_is() {
+  TEST_ASSERT_TRUE(host_is("dash.fy", "dash.fy"));
+  TEST_ASSERT_TRUE(host_is("Dash.FY:8443", "dash.fy"));
+  TEST_ASSERT_FALSE(host_is("dash.f", "dash.fy"));
+  TEST_ASSERT_FALSE(host_is("dash.fy.", "dash.fy"));
+  TEST_ASSERT_FALSE(host_is("", "dash.fy"));
+  TEST_ASSERT_FALSE(host_is("dash.fy", ""));
+  TEST_ASSERT_FALSE(host_is(nullptr, "dash.fy"));
+  TEST_ASSERT_FALSE(host_is("dash.fy", nullptr));
 }
 
 int main(int, char **) {
@@ -134,5 +160,6 @@ int main(int, char **) {
   RUN_TEST(test_edns_record_is_dropped);
   RUN_TEST(test_bad_packets_are_ignored);
   RUN_TEST(test_routing);
+  RUN_TEST(test_host_is);
   return UNITY_END();
 }
