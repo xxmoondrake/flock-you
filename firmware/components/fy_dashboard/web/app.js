@@ -986,7 +986,9 @@
       if (!this.width) return;  // not displayed yet
       this.fitted = true;
       if (!this.dots.length) {
-        this.setCentre(30, 0, 2);
+        // Close in, as for detections: zoomed out to the whole world, the
+        // scale bar swings with latitude as the map is dragged.
+        this.setCentre(30, 0, 12);
         return;
       }
       const lats = this.dots.map((d) => d.lat);
@@ -1150,10 +1152,21 @@
       b.setAttribute('aria-selected', String(b.dataset.view === name));
     }
     for (const v of ['list', 'map', 'export', 'device']) $(`#view-${v}`).hidden = v !== name;
+    document.body.classList.toggle('map-shown', name === 'map');
     if (name === 'map') map.show();
     else map.hide();
+    keepOffTop();
     if (name === 'device') loadStatus();
   }
+
+  // Android's network sign-in window reloads the page on any downward drag
+  // while the page is scrolled to the very top, a drag on the map included.
+  // Scrolled down a pixel, the page is not at the top, so the map keeps its
+  // drags.
+  function keepOffTop() {
+    if (map.visible && window.scrollY <= 0) window.scrollTo(0, 1);
+  }
+  window.addEventListener('scroll', keepOffTop, { passive: true });
 
   document.querySelector('.tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-view]');

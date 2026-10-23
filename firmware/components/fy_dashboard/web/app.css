@@ -111,6 +111,8 @@ input[type="search"], select, .button, button.plain, #refresh, .more {
   background: var(--card); border: 1px solid var(--line); border-radius: 8px; touch-action: none; cursor: grab;
   user-select: none; -webkit-user-select: none;
 }
+/* Room to scroll a pixel while the map shows: see keepOffTop in app.js. */
+body.map-shown { min-height: calc(100vh + 1px); }
 .map-tiles, .map-dots, .map-track { position: absolute; inset: 0; }
 .map-track { width: 100%; height: 100%; pointer-events: none; }
 .map-tiles .grid {
