@@ -11,7 +11,7 @@ Passive Wi-Fi and BLE detection firmware (ESP-IDF 6.0.1), separate from the upst
 
 **Capture.** Wi-Fi in promiscuous receive on channels 11/6/1 (250 ms dwell); passive BLE scanning (30 ms window every 300 ms). Nothing is transmitted while observing. Capture callbacks only pre-filter and copy into bounded queues for a matcher task; full queues drop and count, never blocking the radios.
 
-**Matching.** Upstream flock-you signatures, pinned at upstream commit `6704f01`. Each rule is **specific** or **possible** (broad manufacturer prefixes or generic identifiers); neither label proves what a device is. The console reports a match at most once per address per 5 s unless it strengthens, with fix state (`gps=current hdop=…` or `no_fix`) but no coordinates. A specific match flashes the LED three times.
+**Matching.** Upstream flock-you's Flock signatures (pinned at upstream commit `6704f01`), reviewed on 2026-10-22 against the device families of datafx/alpr_detector: a 78-entry IEEE vendor watchlist (ALPR, body cameras, two-way radios, vehicle networking, speed radar, light bars, drones, gunshot sensors), Axon, BodyWorn, and Motorola BLE identifiers, and Flock's SoftAP SSID. Every identifier was checked against the IEEE or Bluetooth SIG registries or a published field capture; sources, labels, and the changes from upstream are in [`datasets/esp_idf_firmware_signatures.md`](../datasets/esp_idf_firmware_signatures.md). Each match is **specific** or **possible** (broad manufacturer prefixes or generic identifiers); neither label proves what a device is. Device types group matches by gear category. The console reports a match at most once per address per 5 s unless it strengthens, with fix state (`gps=current hdop=…` or `no_fix`) but no coordinates. A specific match flashes the LED three times.
 
 **Recording.** Every match, before rate limiting, is queued to the recorder, which groups an address's sightings into an encounter. An encounter keeps its strongest rule, count, RSSI range, and three sightings (first, last, strongest), each with time, RSSI, location, and fix state. It is written on open, while changing (rate-limited), and on close, so a power cut loses about a minute at most. Boards that measure a battery can also log battery samples (`FY_BATTERY_LOG`, off by default).
 
@@ -59,6 +59,9 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 | `FY_STATUS_LED_PATTERNS` | XIAO only | Show the operating mode on the LED |
 | `FY_GPS_LOG_RAW_NMEA` | off | Echo raw NMEA to the console (`heltec_v43_debug_nmea`) |
 | `FY_SERIAL_JSON` | on | Print upstream dashboard JSON for each reported match |
+| `FY_SIG_MOTOROLA`, `FY_SIG_SIERRA_WIRELESS` | on | Match these broad vendors (labeled possible) |
+| `FY_SIG_CRADLEPOINT` | off | Match Cradlepoint vehicle routers (noisy in the reference's field tests) |
+| `FY_SIG_RADIO_OUIS_ANY_FRAME` | off | Match the Flock radio-module OUIs (Lite-On and others) on any frame, as upstream does, not only in wildcard probes |
 | `FY_DASHBOARD_SSID_PREFIX` | `FY-` | Access point name prefix; four random characters follow |
 | `FY_DASHBOARD_CHANNEL` | 6 | Access point channel |
 | `FY_DASHBOARD_IDLE_S` | 600 | End a dashboard session after this long without use |
@@ -70,7 +73,7 @@ The XIAO has no Wi-Fi dashboard (`FY_WIFI_DASHBOARD` off); its dashboard is USB.
 
 ## Planned
 
-- Signature review against the device families in datafx/alpr_detector, taking identifiers only, each checked against a primary source (IEEE or Bluetooth SIG registry, or field captures).
+- Field validation of the reviewed signatures, a review of the legacy flocker rules, and Wi-Fi channels beyond 1, 6, and 11.
 - Full browser dashboard replacing the minimal status page: HTTPS, per-device authentication, passkey change, CSV and JSON export, and clearing.
 - GPS on the XIAO via an external NMEA receiver; the phone's location as an optional dashboard source.
 - Optional position estimate for a detected transmitter from several located sightings and their signal strengths.
@@ -101,9 +104,13 @@ Each reported match is also printed as one JSON line in upstream's format, so th
 | `wifi_wildcard_probe` | `wifi_wildcard_probe` | 3 |
 | `wifi_oui_addr2` | `wifi_oui_addr2` | 2 |
 | `wifi_oui_addr1`, `wifi_oui_addr3` | same as the rule | 1 |
+| `wifi_ssid_flock` | `wifi_ssid` (the SSID in `ssid`) | 3 |
 | BLE name rules | `ble_name` | 2 |
-| `ble_mfg_09c8` | `ble_mfg` | 2 |
-| BLE service rules | `ble_gatt_svc` (channel 255, frequency 0) | 2 |
+| BLE company ID rules | `ble_mfg` | 2 |
+| BLE service rules and the Axon tag | `ble_gatt_svc` (channel 255, frequency 0) | 2 |
+| `ble_oui` | `ble_oui` | 1 |
+
+`strength` is the match's own: a watchlist OUI reports its vendor's label.
 
 The firmware does not read dashboard commands. It has no buzzer for the beep controls, and it does not dump stored records over serial (`dump_session`), because export is planned for the authenticated dashboard; read records with esptool as above.
 
@@ -153,10 +160,11 @@ Before flashing:
 
 ## Signature review notes
 
-Carried over unchanged from upstream; open items for the planned review (registry owners and sources are in the datasets note linked above):
-- The OUI list includes broad vendor prefixes: `00:03:7f` is Qualcomm Atheros, and at least `a4:cf:12` and `3c:71:bf` appear to be Espressif, so ESP32 boards (another detector, a test transmitter) can match. All OUI rules are labeled possible.
-- The BLE Raven rule matches any 16-bit service UUID in `0x3100`-`0x3500`; labeled specific pending review.
-- The BLE names "DfuTarg" and a bare 10-digit serial, the Nordic DFU service, and company ID `0x09C8` are shared by unrelated products; labeled possible.
+Changes from upstream's set in the 2026-10-22 review (details in the datasets note linked above):
+- The Flock radio-module OUIs (22 Lite-On blocks plus Silicon Labs, Espressif, Samsung, USI, and the Qualcomm Atheros default) also ship in laptops, phones, and IoT gear, so they now gate only the wildcard-probe rules; `FY_SIG_RADIO_OUIS_ANY_FRAME` restores any-frame matching. Espressif blocks mean an ESP32 (another detector, a test transmitter) can still match there.
+- Flock Safety's own block `b4:1e:52` is specific; `b8:35:32` is gone (not an IEEE assignment).
+- The bare 10-digit BLE name is retired (it matched a phone); Raven is limited to its five advertised services, read in 16-bit and 128-bit form.
+- "DfuTarg", the Nordic DFU service, company ID `0x09C8`, `FS-` names, and names starting `Flock` stay or come in as possible: they are shared by unrelated products.
 
 ## License
 

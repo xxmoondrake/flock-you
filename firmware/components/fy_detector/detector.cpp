@@ -67,9 +67,9 @@ fy_detector_sighting_hook sighting_hook = nullptr;
 
 uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
-uint8_t rank_of(Rule rule) {
-  const RuleInfo &info = rule_info(rule);
-  return static_cast<uint8_t>((static_cast<uint8_t>(info.strength) << 4) | info.upstream_tier);
+uint8_t rank_of(const Match &m) {
+  return static_cast<uint8_t>((static_cast<uint8_t>(m.strength) << 4) |
+                              rule_info(m.rule).upstream_tier);
 }
 
 // Returns true when this match should be reported. A stronger match for an
@@ -77,7 +77,7 @@ uint8_t rank_of(Rule rule) {
 // information, not a repeat.
 bool should_report(const Match &m) {
   const uint32_t now = now_ms();
-  const uint8_t rank = rank_of(m.rule);
+  const uint8_t rank = rank_of(m);
   Recent *oldest = &recent[0];
   for (Recent &r : recent) {
     if (r.used && memcmp(r.mac, m.mac, 6) == 0) {
@@ -103,7 +103,7 @@ bool should_report(const Match &m) {
 void report(const Match &m, int8_t rssi, uint8_t channel) {
   g_counters.matches++;
   const RuleInfo &info = rule_info(m.rule);
-  const bool specific = info.strength == Strength::Specific;
+  const bool specific = m.strength == Strength::Specific;
 
   // Every match goes to the recorder; rate limiting only applies to logs and
   // indications.
@@ -111,7 +111,7 @@ void report(const Match &m, int8_t rssi, uint8_t channel) {
     fy_detector_sighting s = {};
     memcpy(s.mac, m.mac, sizeof(s.mac));
     s.rule = static_cast<uint8_t>(m.rule);
-    s.rank = rank_of(m.rule);
+    s.rank = rank_of(m);
     s.specific = specific;
     s.ble = info.transport == Transport::Ble;
     s.rssi = rssi;
@@ -197,7 +197,9 @@ void matcher_task(void *) {
       for (int i = 0; i < kBatch && xQueueReceive(ble_queue, &ble, 0) == pdTRUE; i++) {
         busy = true;
         Match m;
-        if (match_ble_advert(ble.addr, ble.data, ble.len, &m)) report(m, ble.rssi, 0);
+        if (match_ble_advert(ble.addr, ble.public_addr, ble.data, ble.len, &m)) {
+          report(m, ble.rssi, 0);
+        }
       }
     }
     // Woken by submit_*; the timeout is only a safety net.
@@ -254,6 +256,21 @@ bool submit_ble(const BleCapture &capture) {
 using namespace fy::detector;
 
 esp_err_t fy_detector_start() {
+  fy::Options options;  // Kconfig booleans are only defined when on
+#ifndef CONFIG_FY_SIG_MOTOROLA
+  options.motorola = false;
+#endif
+#ifndef CONFIG_FY_SIG_SIERRA_WIRELESS
+  options.sierra_wireless = false;
+#endif
+#ifdef CONFIG_FY_SIG_CRADLEPOINT
+  options.cradlepoint = true;
+#endif
+#ifdef CONFIG_FY_SIG_RADIO_OUIS_ANY_FRAME
+  options.radio_ouis_any_frame = true;
+#endif
+  fy::set_options(options);  // before capture starts
+
   wifi_queue = xQueueCreate(kWifiQueueDepth, sizeof(WifiCapture));
   ble_queue = xQueueCreate(kBleQueueDepth, sizeof(BleCapture));
   if (!wifi_queue || !ble_queue) return ESP_ERR_NO_MEM;
@@ -263,9 +280,14 @@ esp_err_t fy_detector_start() {
     return ESP_ERR_NO_MEM;
   }
 
-  ESP_LOGI(TAG, "signature set: %u target OUIs, %u rules",
-           static_cast<unsigned>(fy::target_oui_count()),
-           static_cast<unsigned>(fy::Rule::Count));
+  ESP_LOGI(TAG,
+           "signature set: %u watchlist OUIs, %u Flock radio OUIs (%s), %u rules; "
+           "motorola=%d sierra=%d cradlepoint=%d",
+           static_cast<unsigned>(fy::watchlist_count()),
+           static_cast<unsigned>(fy::flock_radio_oui_count()),
+           options.radio_ouis_any_frame ? "any frame" : "probes only",
+           static_cast<unsigned>(fy::Rule::Count), options.motorola, options.sierra_wireless,
+           options.cradlepoint);
   ESP_RETURN_ON_ERROR(wifi_capture_start(), TAG, "Wi-Fi capture");
   ESP_RETURN_ON_ERROR(ble_capture_start(), TAG, "BLE capture");
   return ESP_OK;

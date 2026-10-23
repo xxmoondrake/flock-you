@@ -33,18 +33,19 @@ size_t format_dashboard_detection(const Match &m, int rssi, uint8_t channel, cha
   if (ble) channel = kDashboardBleChannel;
   char name[sizeof(m.name)];
   sanitize_name(m.name, name, sizeof(name));
+  const bool ssid_rule = m.rule == Rule::WifiSsidFlock;  // `name` holds the SSID
 
   const int n = snprintf(
       out, cap,
       "{\"event\":\"detection\",\"detection_method\":\"%s\",\"detection_tier\":%u,"
       "\"protocol\":\"%s\",\"mac_address\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
       "\"oui\":\"%02x:%02x:%02x\",\"device_name\":\"%s\",\"rssi\":%d,\"channel\":%u,"
-      "\"frequency\":%u,\"ssid\":\"\",\"rule\":\"%s\",\"strength\":\"%s\"}",
+      "\"frequency\":%u,\"ssid\":\"%s\",\"rule\":\"%s\",\"strength\":\"%s\"}",
       info.upstream_method, static_cast<unsigned>(info.upstream_tier),
       ble ? "ble" : "wifi_2_4ghz", m.mac[0], m.mac[1], m.mac[2], m.mac[3], m.mac[4], m.mac[5],
-      m.mac[0], m.mac[1], m.mac[2], name, rssi, static_cast<unsigned>(channel),
-      ble ? 0u : frequency_mhz(channel), info.id,
-      info.strength == Strength::Specific ? "specific" : "possible");
+      m.mac[0], m.mac[1], m.mac[2], ssid_rule ? "" : name, rssi, static_cast<unsigned>(channel),
+      ble ? 0u : frequency_mhz(channel), ssid_rule ? name : "", info.id,
+      m.strength == Strength::Specific ? "specific" : "possible");
   if (n < 0 || static_cast<size_t>(n) >= cap) {
     out[0] = '\0';
     return 0;

@@ -19,7 +19,7 @@ struct DetectionRow {
   uint16_t stored;   // distinct devices in stored history
 };
 
-constexpr int kMaxDetectionRows = 16;
+constexpr int kMaxDetectionRows = 24;
 
 struct UiModel {
   uint32_t now_ms;

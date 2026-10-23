@@ -35,7 +35,8 @@ struct WifiCapture {
 struct BleCapture {
   int8_t rssi;
   uint8_t len;
-  uint8_t addr[6];  // display order
+  bool public_addr;  // a public device address, whose OUI is meaningful
+  uint8_t addr[6];   // display order
   uint8_t data[kBleAdvMax];
 };
 

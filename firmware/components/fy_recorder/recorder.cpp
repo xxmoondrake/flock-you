@@ -86,8 +86,8 @@ fy_recorder_status status = {};  // guarded by status_lock
 
 uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
-uint8_t type_of_rule(uint8_t rule) {
-  return static_cast<uint8_t>(fy::device_type(static_cast<fy::Rule>(rule)));
+uint8_t type_of(uint8_t rule, const uint8_t mac[6]) {
+  return static_cast<uint8_t>(fy::classify(static_cast<fy::Rule>(rule), mac).type);
 }
 
 // Boot session counter, persisted in NVS so uptimes from different sessions
@@ -144,7 +144,7 @@ bool append(void *record) {
 
 void encounter_sink(EncounterRecord &rec, void *) {
   if (!append(&rec)) return;
-  stored_devices.add(type_of_rule(rec.rule), rec.mac);
+  stored_devices.add(type_of(rec.rule, rec.mac), rec.mac);
   portENTER_CRITICAL(&status_lock);
   status.encounter_records++;
   note_utc(rec.first.utc);
@@ -285,7 +285,7 @@ void recorder_task(void *) {
     Sighting s;
     if (xQueueReceive(queue, &s, pdMS_TO_TICKS(kLoopWaitMs)) == pdTRUE) {
       tracker->on_sighting(s);
-      if (session_devices.add(type_of_rule(s.rule), s.mac)) publish_counts();
+      if (session_devices.add(type_of(s.rule, s.mac), s.mac)) publish_counts();
     }
     const uint32_t now = now_ms();
     tracker->tick(now);
@@ -324,7 +324,7 @@ void scan_history() {
     if (fy::store::record_type(rec) == fy::store::kTypeEncounter) {
       EncounterRecord e;
       memcpy(&e, rec, sizeof(e));
-      stored_devices.add(type_of_rule(e.rule), e.mac);
+      stored_devices.add(type_of(e.rule, e.mac), e.mac);
       encounters++;
       utc = e.first.utc;
     } else if (fy::store::record_type(rec) == fy::store::kTypeBattery) {

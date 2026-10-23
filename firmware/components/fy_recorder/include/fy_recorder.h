@@ -11,7 +11,7 @@
 
 #include "esp_err.h"
 
-constexpr int kFyRecorderMaxTypes = 16;  // device types tracked for counts
+constexpr int kFyRecorderMaxTypes = 24;  // device types tracked for counts
 
 struct fy_recorder_status {
   bool available;        // the log partition is mounted

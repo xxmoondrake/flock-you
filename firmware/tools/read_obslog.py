@@ -34,6 +34,8 @@ RULES = [
     "wifi_probe_ie_sig", "wifi_wildcard_probe", "wifi_oui_addr2", "wifi_oui_addr1",
     "wifi_oui_addr3", "ble_name_penguin", "ble_name_fs_ext_battery", "ble_name_bare_serial",
     "ble_name_dfutarg", "ble_mfg_09c8", "ble_svc_flock", "ble_svc_nordic_dfu", "ble_svc_raven",
+    "wifi_ssid_flock", "ble_axon_tag", "ble_mfg_axon", "ble_svc_axon", "ble_name_bodyworn",
+    "ble_mfg_motorola", "ble_svc_motorola", "ble_name_fs_hex", "ble_name_flock", "ble_oui",
 ]
 SOURCES = {0: "none", 1: "gnss", 2: "phone"}
 STATES = {0: "none", 1: "current", 2: "stale"}

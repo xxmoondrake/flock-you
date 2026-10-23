@@ -59,6 +59,8 @@ int gap_event(struct ble_gap_event *event, void *) {
       capture.rssi = disc.rssi;
       // NimBLE stores addresses least significant byte first.
       for (int i = 0; i < 6; i++) capture.addr[i] = disc.addr.val[5 - i];
+      capture.public_addr =
+          disc.addr.type == BLE_ADDR_PUBLIC || disc.addr.type == BLE_ADDR_PUBLIC_ID;
       size_t len = disc.length_data;
       if (len > kBleAdvMax) {
         len = kBleAdvMax;

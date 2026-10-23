@@ -1,3 +1,43 @@
+menu "Detector signatures"
+
+    config FY_SIG_MOTOROLA
+        bool "Match Motorola Solutions OUIs and BLE IDs"
+        default y
+        help
+            Motorola Solutions' IEEE blocks and Bluetooth IDs cover its
+            whole product line: two-way radios carried by retail, school,
+            and venue staff as much as police. Matches are labeled
+            possible. Turn off if they are noise where you use the device.
+
+    config FY_SIG_SIERRA_WIRELESS
+        bool "Match Sierra Wireless OUIs"
+        default y
+        help
+            In-vehicle routers used by police fleets, and by many civilian
+            fleets too. Matches are labeled possible.
+
+    config FY_SIG_CRADLEPOINT
+        bool "Match Cradlepoint OUIs"
+        default n
+        help
+            Off by default, as in the parity reference: its field testing
+            found no police vehicles and a steady stream of school buses
+            and cellular traffic cameras.
+
+    config FY_SIG_RADIO_OUIS_ANY_FRAME
+        bool "Match Flock radio-module OUIs on any frame"
+        default n
+        help
+            The community OUI list for Flock cameras is mostly Lite-On,
+            Silicon Labs, Espressif, Samsung, and USI radio-module blocks,
+            which also ship in laptops, phones, and IoT gear. Off: they are
+            matched only in wildcard probe requests, where the IE
+            fingerprint separates a camera from a laptop. On: upstream's
+            behaviour, matching them as transmitter, receiver, or BSSID in
+            any frame (labeled possible).
+
+endmenu
+
 menu "Detector output"
 
     config FY_SERIAL_JSON
