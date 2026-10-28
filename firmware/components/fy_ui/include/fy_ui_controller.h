@@ -19,8 +19,11 @@ constexpr uint32_t kPowerOffHoldMs = 4000;
 constexpr uint32_t kPowerOffMinUptimeMs = 30000;
 
 enum class Screen : uint8_t { Home = 0, Detections, Data, Device, Count };
-enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm, DeviceMenu, DashboardMenu };
-enum class Press : uint8_t { Short, Long, PowerOff };
+enum class Overlay : uint8_t { None = 0, DataMenu, EraseConfirm, DeviceMenu, DashboardMenu, AlertsMenu };
+// PowerOffEarly: held long enough to power off, but within
+// kPowerOffMinUptimeMs of start-up, when a held wake press could still be
+// down.
+enum class Press : uint8_t { Short, Long, PowerOff, PowerOffEarly };
 enum class Action : uint8_t {
   None,
   SaveOpen,
@@ -31,6 +34,10 @@ enum class Action : uint8_t {
   StartUsbDashboard,
   StartWifiDashboard,
   StopDashboard,
+  ToggleAlerts,  // the master switch
+  ToggleBuzzer,
+  ToggleFlash,
+  TestAlert,  // plays the alert once with the current settings
 };
 
 struct UiState {

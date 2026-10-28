@@ -62,8 +62,10 @@ struct Recent {
 
 Recent recent[kRecentSlots];
 
-// Set once at startup, before matching produces sightings.
-fy_detector_sighting_hook sighting_hook = nullptr;
+// Set at startup, before matching produces sightings: the recorder and the
+// alerts.
+constexpr int kMaxSightingHooks = 2;
+fy_detector_sighting_hook sighting_hooks[kMaxSightingHooks] = {};
 
 uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
@@ -107,7 +109,7 @@ void report(const Match &m, int8_t rssi, uint8_t channel) {
 
   // Every match goes to the recorder; rate limiting only applies to logs and
   // indications.
-  if (sighting_hook) {
+  if (sighting_hooks[0]) {
     fy_detector_sighting s = {};
     memcpy(s.mac, m.mac, sizeof(s.mac));
     s.rule = static_cast<uint8_t>(m.rule);
@@ -118,7 +120,9 @@ void report(const Match &m, int8_t rssi, uint8_t channel) {
     s.channel = s.ble ? 0 : channel;
     memcpy(s.name, m.name, sizeof(s.name));
     s.uptime_ms = now_ms();
-    sighting_hook(s);
+    for (fy_detector_sighting_hook hook : sighting_hooks) {
+      if (hook) hook(s);
+    }
   }
 
   if (!should_report(m)) return;
@@ -297,7 +301,15 @@ void fy_detector_set_wifi_capture(bool enabled) { wifi_capture_set_enabled(enabl
 
 void fy_detector_set_ble_scan(bool enabled) { ble_capture_set_enabled(enabled); }
 
-void fy_detector_set_sighting_hook(fy_detector_sighting_hook hook) { sighting_hook = hook; }
+bool fy_detector_add_sighting_hook(fy_detector_sighting_hook hook) {
+  for (fy_detector_sighting_hook &slot : sighting_hooks) {
+    if (!slot) {
+      slot = hook;
+      return true;
+    }
+  }
+  return false;
+}
 
 void fy_detector_get_status(fy_detector_status *out) {
   out->wifi_capture = g_counters.wifi_capture.load();

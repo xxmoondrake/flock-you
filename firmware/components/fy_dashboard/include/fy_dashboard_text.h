@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "fy_alerts_logic.h"
+
 namespace fy::dashboard {
 
 // Symbols for generated names and passkeys: lowercase letters and digits
@@ -44,18 +46,22 @@ enum class LoginNotice : uint8_t {
 // The login form, posting "password" to /login. Returns the length written,
 // or 0 (and an empty string) when `cap` is too small. Like every page here:
 // no scripts and no external resources.
-size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap);
+size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap,
+                         const char *footer = nullptr);
 
 // The change-password form, posting "new" and "confirm" (and "current"
 // unless `first_login`) to /password. `first_login`: the default password is
 // still set and must be replaced before anything else. `problem` is shown as
 // an error when not empty.
-size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap);
+size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap,
+                            const char *footer = nullptr);
 
 // ---- Status --------------------------------------------------------------------------
 
 struct Status {
   const char *board;
+  const char *model;     // the board for people, e.g. "Heltec V4.3"
+  const char *firmware;  // the firmware version
   uint32_t uptime_s;
   bool wifi_session;      // this request came over a Wi-Fi session (else USB)
   bool detection_paused;  // a Wi-Fi session is on, which pauses detection
@@ -97,5 +103,27 @@ struct Status {
 // The status as a JSON object (no location). Returns the length written, or
 // 0 when `cap` is too small.
 size_t format_status_json(const Status &status, char *out, size_t cap);
+
+// A download's file name: limier-detections, then the browser's date when it
+// sent a valid one (YYYY-MM-DD), then .json or .csv. Returns its length, or
+// 0 when `cap` is too small.
+size_t export_filename(const char *date, bool json, char *out, size_t cap);
+
+// The settings on the dashboard's Device tab.
+struct DeviceSettings {
+  fy::alerts::Settings alerts;
+  bool buzzer_fitted;  // a buzzer pin is configured
+  bool display;        // the board has a screen, for the screen flash
+  bool standby;        // the selected detection mode
+};
+
+// The settings as a JSON object. Returns the length written, or 0 when `cap`
+// is too small.
+size_t format_settings_json(const DeviceSettings &settings, char *out, size_t cap);
+
+// Applies a settings form: alerts, buzzer, and flash as 0 or 1; tiers as a
+// mask of upstream tiers (0-31); mode as scanning or standby. Absent fields
+// keep their values. A malformed field changes nothing and returns false.
+bool apply_settings_form(const char *body, size_t len, DeviceSettings *settings);
 
 }  // namespace fy::dashboard

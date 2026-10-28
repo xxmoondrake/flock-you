@@ -2,7 +2,10 @@
 
 #include "fy_dashboard_text.h"
 
+#include <cstdlib>
 #include <cstring>
+
+#include "fy_dashboard_auth.h"
 
 #include "writer.h"
 
@@ -31,11 +34,22 @@ void page_start(Writer &w, const char *title) {
       "button{margin-top:16px;width:100%%;padding:10px;font:inherit;font-weight:600;border:0;"
       "border-radius:6px;background:var(--accent);color:#fff}"
       ".err{color:var(--accent);font-weight:600}.note{color:var(--muted);font-size:14px}"
-      "a{color:inherit}</style></head><body><main><h1>%s</h1>",
+      "a{color:inherit}.foot{margin-top:24px;text-align:center}"
+      ".logo{display:block;margin:0 0 12px;border-radius:6px;"
+      "image-rendering:pixelated}</style></head><body><main>"
+      "<img class=\"logo\" src=\"/logo.png\" alt=\"\" width=\"128\" height=\"64\"><h1>%s</h1>",
       title, title);
 }
 
-void page_end(Writer &w) { w.add("</main></body></html>"); }
+// Closes a page, after a line naming the firmware when `footer` is given.
+void page_end(Writer &w, const char *footer) {
+  if (footer && *footer) {
+    w.add("<p class=\"note foot\">");
+    w.add_html(footer);
+    w.add("</p>");
+  }
+  w.add("</main></body></html>");
+}
 
 }  // namespace
 
@@ -71,10 +85,11 @@ bool make_ssid(const char *prefix, RandomByte next, void *ctx, char *out, size_t
 
 // ---- Pages ---------------------------------------------------------------------------
 
-size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap) {
+size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t cap,
+                         const char *footer) {
   if (!out || cap == 0) return 0;
   Writer w{out, cap};
-  page_start(w, "Detector");
+  page_start(w, "Limier");
   switch (notice) {
     case LoginNotice::Failed: w.add("<p class=\"err\">Wrong password.</p>"); break;
     case LoginNotice::Wait:
@@ -90,11 +105,12 @@ size_t render_login_page(LoginNotice notice, uint32_t wait_s, char *out, size_t 
       "<input id=\"pw\" name=\"password\" type=\"password\" autocomplete=\"current-password\" "
       "required autofocus><button type=\"submit\">Log in</button></form>"
       "<p class=\"note\">The same password opens the USB and Wi-Fi dashboards.</p>");
-  page_end(w);
+  page_end(w, footer);
   return w.finish();
 }
 
-size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap) {
+size_t render_password_page(bool first_login, const char *problem, char *out, size_t cap,
+                            const char *footer) {
   if (!out || cap == 0) return 0;
   Writer w{out, cap};
   page_start(w, first_login ? "Set a new password" : "Change password");
@@ -123,7 +139,7 @@ size_t render_password_page(bool first_login, const char *problem, char *out, si
       "<p class=\"note\">8 to 64 characters.</p>",
       first_login ? " autofocus" : "");
   if (!first_login) w.add("<p><a href=\"/\">Back to the dashboard</a></p>");
-  page_end(w);
+  page_end(w, footer);
   return w.finish();
 }
 
@@ -134,6 +150,10 @@ size_t format_status_json(const Status &s, char *out, size_t cap) {
   Writer w{out, cap};
   w.add("{\"board\":");
   w.add_json_string(s.board ? s.board : "");
+  w.add(",\"model\":");
+  w.add_json_string(s.model ? s.model : "");
+  w.add(",\"firmware\":");
+  w.add_json_string(s.firmware ? s.firmware : "");
   w.add(
       ",\"uptime_s\":%lu,\"dashboard\":\"%s\",\"detection_paused\":%s,\"idle_minutes\":%u,"
       "\"passkey_temporary\":%s",
@@ -172,6 +192,70 @@ size_t format_status_json(const Status &s, char *out, size_t cap) {
         static_cast<unsigned long>(s.history_clears), static_cast<unsigned long>(s.oldest_seq));
   w.add(",\"phone\":{\"time\":%s}}", s.phone_time ? "true" : "false");
   return w.finish();
+}
+
+size_t export_filename(const char *date, bool json, char *out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  bool dated = date && strlen(date) == 10;
+  for (int i = 0; dated && i < 10; i++) {
+    dated = (i == 4 || i == 7) ? date[i] == '-' : (date[i] >= '0' && date[i] <= '9');
+  }
+  Writer w{out, cap};
+  w.add("limier-detections%s%s.%s", dated ? "-" : "", dated ? date : "", json ? "json" : "csv");
+  return w.finish();
+}
+
+size_t format_settings_json(const DeviceSettings &s, char *out, size_t cap) {
+  if (!out || cap == 0) return 0;
+  Writer w{out, cap};
+  w.add(
+      "{\"alerts\":%s,\"buzzer\":%s,\"flash\":%s,\"tiers\":%u,\"buzzer_fitted\":%s,"
+      "\"display\":%s,\"mode\":\"%s\"}",
+      s.alerts.enabled ? "true" : "false", s.alerts.buzzer ? "true" : "false",
+      s.alerts.flash ? "true" : "false", static_cast<unsigned>(s.alerts.tiers),
+      s.buzzer_fitted ? "true" : "false", s.display ? "true" : "false",
+      s.standby ? "standby" : "scanning");
+  return w.finish();
+}
+
+namespace {
+
+// A 0 or 1 field. True when it is absent (keeping *value) or valid.
+bool switch_field(const char *body, size_t len, const char *key, bool *value) {
+  char v[4];
+  if (!form_value(body, len, key, v, sizeof(v))) return true;
+  if (strcmp(v, "0") != 0 && strcmp(v, "1") != 0) return false;
+  *value = v[0] == '1';
+  return true;
+}
+
+}  // namespace
+
+bool apply_settings_form(const char *body, size_t len, DeviceSettings *settings) {
+  DeviceSettings s = *settings;
+  if (!switch_field(body, len, "alerts", &s.alerts.enabled) ||
+      !switch_field(body, len, "buzzer", &s.alerts.buzzer) ||
+      !switch_field(body, len, "flash", &s.alerts.flash)) {
+    return false;
+  }
+  char v[12];
+  if (form_value(body, len, "tiers", v, sizeof(v))) {
+    char *end = nullptr;
+    const unsigned long tiers = strtoul(v, &end, 10);
+    if (!v[0] || *end || v[0] == '-' || tiers > fy::alerts::kAllTiers) return false;
+    s.alerts.tiers = static_cast<uint8_t>(tiers);
+  }
+  if (form_value(body, len, "mode", v, sizeof(v))) {
+    if (strcmp(v, "scanning") == 0) {
+      s.standby = false;
+    } else if (strcmp(v, "standby") == 0) {
+      s.standby = true;
+    } else {
+      return false;
+    }
+  }
+  *settings = s;
+  return true;
 }
 
 }  // namespace fy::dashboard

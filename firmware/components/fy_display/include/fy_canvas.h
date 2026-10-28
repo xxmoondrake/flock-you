@@ -28,9 +28,13 @@ class Canvas {
   bool pixel(int x, int y) const;
   void fill_rect(int x, int y, int w, int h, bool on);
 
-  // Draws printable ASCII; other bytes render as '?'. Pixels outside the
-  // canvas are clipped. Returns the x position after the last glyph.
-  int draw_text(int x, int y, const char *text, bool on = true);
+  // Draws printable ASCII; other bytes render as '?'. Each font pixel is a
+  // `scale` x `scale` block. Pixels outside the canvas are clipped. Returns
+  // the x position after the last glyph.
+  int draw_text(int x, int y, const char *text, bool on = true, int scale = 1);
+
+  // Replaces the canvas with a frame in the same order, optionally inverted.
+  void load_frame(const uint8_t *frame, bool inverted = false);
 
   // SSD1306 page order: 8 pages of 128 column bytes, bit 0 at the top.
   const uint8_t *frame() const { return buf_; }

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 //
-// Heltec WiFi LoRa 32 V4.3, standard V4 variant (ESP32-S3R2, 16 MB flash,
-// native USB).
+// Heltec WiFi LoRa 32 V4: the V4.3 (ESP32-S3R2) and the V4 R8 (ESP32-S3R8),
+// both with 16 MB flash and native USB. Their pins differ where the R8's
+// octal PSRAM takes GPIO33-37; see the R8 notes below the V4.3's.
 //
-// Pin sources: Heltec's "Wi-Fi LoRa 32 V4 Pin Map" (V4.3.1 datasheet), the
+// V4.3 pin sources: Heltec's "Wi-Fi LoRa 32 V4 Pin Map" (V4.3.1 datasheet), the
 // Meshtastic heltec_v4 variant, and the flocker DEFLOCK 3.2.0 firmware, whose
 // OLED setup uses these pins:
 //   OLED    SSD1306 128x64 at I2C 0x3C; SDA GPIO17, SCL GPIO18, reset GPIO21
 //   Vext    GPIO36, active low; powers the OLED (and the LoRa antenna boost)
 //   LED     GPIO35, active high
-//   Button  PRG on GPIO0 (boot strapping pin); not used yet
+//   Button  PRG on GPIO0 (boot strapping pin)
 //   GNSS    Quectel L76K on the 8-pin GNSS connector. Power (VGNSS_Ctrl)
 //           GPIO34, active low. Module TX -> GPIO39 (ESP32 RX), 9600 baud.
 //           ESP32 TX -> GPIO38 (module RX) for configuration commands; with
@@ -23,10 +24,22 @@
 //           measuring. Attenuation 2.5 dB and ratio 4.9 x 1.045, as in
 //           Meshtastic's heltec_v4 variant. GPIO37 also reaches the GNSS
 //           connector (labelled VEXT_CTRL there); the L76K does not need it.
+//
+// V4 R8 differences, from Heltec's "Wi-Fi LoRa 32 V4-R8" pin map and wiki
+// and Meshtastic's heltec_v4_r8 variant. Its octal PSRAM uses GPIO26 and
+// GPIO33-37, which this firmware never touches (PSRAM stays disabled).
+//   Vext    GPIO40, active low (the GNSS connector's GPIO40 "wake" label
+//           is this same line; no wake signal is driven)
+//   LED     GPIO46, active high
+//   GNSS    power (VGNSS_Ctrl) GPIO42, active low; no reset line. The UART
+//           pins and PPS are the V4.3's.
+//   Battery VBAT_Read on GPIO1 with no divider switch. Attenuation 2.5 dB
+//           and the V4.3's ratio, 4.9 x 1.045, which the battery curve was
+//           measured with (Meshtastic's R8 variant uses 4.9 x 1.035).
 
 #include "sdkconfig.h"
 
-#if CONFIG_FY_BOARD_HELTEC_V43
+#if CONFIG_FY_BOARD_HELTEC_V43 || CONFIG_FY_BOARD_HELTEC_V4_R8
 
 #include <cstring>
 
@@ -43,23 +56,37 @@ namespace {
 
 const char *TAG = "board";
 
-constexpr gpio_num_t kVextPin = GPIO_NUM_36;  // active low
-constexpr gpio_num_t kLedPin = GPIO_NUM_35;   // active high
+#if CONFIG_FY_BOARD_HELTEC_V4_R8
+constexpr char kName[] = "heltec_v4_r8";
+constexpr char kModel[] = "Heltec V4 R8";
+constexpr gpio_num_t kVextPin = GPIO_NUM_40;       // active low
+constexpr gpio_num_t kLedPin = GPIO_NUM_46;        // active high
+constexpr gpio_num_t kGnssPowerPin = GPIO_NUM_42;  // active low
+constexpr gpio_num_t kGnssWakePin = GPIO_NUM_NC;
+constexpr gpio_num_t kGnssResetPin = GPIO_NUM_NC;
+constexpr int kBatteryEnablePin = -1;  // the divider is always connected
+#else
+constexpr char kName[] = "heltec_v43";
+constexpr char kModel[] = "Heltec V4.3";
+constexpr gpio_num_t kVextPin = GPIO_NUM_36;       // active low
+constexpr gpio_num_t kLedPin = GPIO_NUM_35;        // active high
+constexpr gpio_num_t kGnssPowerPin = GPIO_NUM_34;  // active low
+constexpr gpio_num_t kGnssWakePin = GPIO_NUM_40;   // high keeps the receiver awake
+constexpr gpio_num_t kGnssResetPin = GPIO_NUM_42;  // active low
+constexpr int kBatteryEnablePin = 37;  // ADC_Ctrl, active high
+#endif
 constexpr gpio_num_t kOledSda = GPIO_NUM_17;
 constexpr gpio_num_t kOledScl = GPIO_NUM_18;
 constexpr gpio_num_t kOledReset = GPIO_NUM_21;
 constexpr uint16_t kOledAddress = 0x3c;
 constexpr uint32_t kI2cHz = 400000;
-constexpr gpio_num_t kGnssPowerPin = GPIO_NUM_34;  // active low
-constexpr gpio_num_t kGnssWakePin = GPIO_NUM_40;   // high keeps the receiver awake
-constexpr gpio_num_t kGnssResetPin = GPIO_NUM_42;  // active low
 constexpr int kGnssRxPin = 39;
 constexpr int kGnssTxPin = 38;
 constexpr int kGnssBaud = 9600;  // L76K default
 constexpr uint32_t kGnssWarmupMs = 1000;  // as Meshtastic's PERIPHERAL_WARMUP_MS
 constexpr int kBatterySensePin = 1;
-constexpr int kBatteryEnablePin = 37;     // ADC_Ctrl, active high
-constexpr int kBatteryAdcAtten = 1;       // ADC_ATTEN_DB_2_5
+constexpr int kBatteryAdcAtten = 1;  // ADC_ATTEN_DB_2_5
+// Measured on the V4.3 with the charge curve; used for both.
 constexpr float kBatteryDivider = 4.9f * 1.045f;
 constexpr gpio_num_t kButtonPin = GPIO_NUM_0;  // PRG, active low
 
@@ -156,8 +183,8 @@ void fy_board_init() {
 
   // Power the OLED and the GNSS receiver, then let the rails settle.
   output(kVextPin, 0);
-  output(kGnssResetPin, 1);  // released before power-up
-  output(kGnssWakePin, 1);
+  if (kGnssResetPin != GPIO_NUM_NC) output(kGnssResetPin, 1);  // released before power-up
+  if (kGnssWakePin != GPIO_NUM_NC) output(kGnssWakePin, 1);
   output(kGnssPowerPin, 0);
   vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -175,11 +202,13 @@ void fy_board_init() {
     led_write(false);
     vTaskDelay(pdMS_TO_TICKS(80));
   }
-  ESP_LOGI(TAG, "Heltec V4.3: display=%s, GNSS powered (RX GPIO%d)", display_ok ? "ok" : "absent",
+  ESP_LOGI(TAG, "%s: display=%s, GNSS powered (RX GPIO%d)", kModel, display_ok ? "ok" : "absent",
            kGnssRxPin);
 }
 
-const char *fy_board_name() { return "heltec_v43"; }
+const char *fy_board_name() { return kName; }
+
+const char *fy_board_model() { return kModel; }
 
 bool fy_board_has_led() { return true; }
 
@@ -251,4 +280,4 @@ bool fy_board_battery_config_get(fy_board_battery_config *out) {
   return true;
 }
 
-#endif  // CONFIG_FY_BOARD_HELTEC_V43
+#endif  // CONFIG_FY_BOARD_HELTEC_V43 || CONFIG_FY_BOARD_HELTEC_V4_R8

@@ -447,7 +447,7 @@ esp_err_t fy_recorder_start() {
   if (xTaskCreate(recorder_task, "fy_recorder", 6144, nullptr, 2, nullptr) != pdPASS) {
     return ESP_ERR_NO_MEM;
   }
-  fy_detector_set_sighting_hook(on_sighting);
+  if (!fy_detector_add_sighting_hook(on_sighting)) return ESP_ERR_NO_MEM;
   ESP_LOGI(TAG,
            "recording to '%s' (%lu KB): %u/%u records (%lu encounter, %lu battery), boot "
            "session %lu, mount %lu ms, history scan %lu ms",

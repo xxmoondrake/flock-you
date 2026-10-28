@@ -16,6 +16,8 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
+#include "esp_app_desc.h"
+#include "fy_alerts.h"
 #include "fy_battery.h"
 #include "fy_board.h"
 #include "fy_detector.h"
@@ -99,7 +101,9 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
   fy_board_init();
-  ESP_LOGI(TAG, "board=%s reset=%s", fy_board_name(), reset_reason_name(esp_reset_reason()));
+  fy_ui_show_splash();  // until the first screen, while everything below starts
+  ESP_LOGI(TAG, "Limier %s, board=%s reset=%s", esp_app_get_description()->version,
+           fy_board_name(), reset_reason_name(esp_reset_reason()));
   optional("status LED", fy_status_led_start());  // solid until scanning starts
 
   // GPS, battery measurement, storage, and the display are optional per
@@ -109,6 +113,7 @@ extern "C" void app_main(void) {
   optional("battery monitor", fy_battery_start());
   fy_battery_set_critical_handler(on_battery_critical);
   optional("recorder", fy_recorder_start());
+  optional("alerts", fy_alerts_start());  // takes sightings, so before detection
   ESP_ERROR_CHECK(fy_detector_start());
   // Every boot starts scanning with no dashboard session.
   optional("device modes", fy_device_start());

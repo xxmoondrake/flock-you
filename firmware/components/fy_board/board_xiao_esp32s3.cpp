@@ -52,6 +52,8 @@ void fy_board_init() {
 
 const char *fy_board_name() { return "xiao_esp32s3"; }
 
+const char *fy_board_model() { return "XIAO ESP32S3"; }
+
 bool fy_board_has_led() { return true; }
 
 void fy_board_led_set(bool on) {

@@ -15,6 +15,9 @@ void fy_board_init();
 // Short identifier for logs, e.g. "xiao_esp32s3".
 const char *fy_board_name();
 
+// The board's model for people, e.g. "Heltec V4.3".
+const char *fy_board_model();
+
 // ---- Status LED -------------------------------------------------------------
 
 // True when the board has an LED the firmware may drive.
@@ -61,6 +64,14 @@ struct fy_board_battery_config {
 
 // Fills `out` and returns true when the board can measure a battery.
 bool fy_board_battery_config_get(fy_board_battery_config *out);
+
+// ---- Alert buzzer ---------------------------------------------------------------
+
+// True when an alert buzzer is configured (FY_BUZZER_GPIO).
+bool fy_board_has_buzzer();
+// Sounds a passive buzzer at `hz`, or silences it at 0; does nothing without
+// one. Call from one task only (the alerts task, once started).
+void fy_board_buzzer_tone(uint16_t hz);
 
 // ---- User button and power ------------------------------------------------------
 

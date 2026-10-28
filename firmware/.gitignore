@@ -4,4 +4,5 @@ sdkconfig.*
 !sdkconfig.defaults
 !sdkconfig.defaults.*
 sdkconfig.old
+__pycache__/
 managed_components/

@@ -1,0 +1,11 @@
+{
+  "name": "fy_alerts",
+  "version": "0.1.0",
+  "description": "Alert preferences and upstream's buzzer sounds and cadence (host-testable); the ESP-IDF task is excluded on host",
+  "license": "MIT",
+  "build": {
+    "srcDir": ".",
+    "includeDir": "include",
+    "srcFilter": ["+<alerts_logic.cpp>"]
+  }
+}

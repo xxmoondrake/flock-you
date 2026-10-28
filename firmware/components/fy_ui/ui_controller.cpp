@@ -11,18 +11,23 @@ constexpr const char *kDataMenu[] = {"Save open encounters", "Erase all records"
 constexpr const char *kEraseConfirm[] = {"Cancel", "Erase everything"};
 // The renderer marks the selected mode and names the dashboard item "Start
 // dashboard" or "Stop dashboard" by state.
-constexpr const char *kDeviceMenu[] = {"Scanning", "Standby", "Dashboard", "Back"};
+constexpr const char *kDeviceMenu[] = {"Scanning", "Standby", "Dashboard", "Alerts", "Back"};
 constexpr const char *kDashboardMenu[] = {"USB dashboard", "WiFi dashboard", "Back"};
+// The renderer adds each setting's value.
+constexpr const char *kAlertsMenu[] = {"Alerts", "Buzzer", "Screen flash", "Test alert", "Back"};
 
 enum DataItem : uint8_t { kSaveOpen = 0, kErase = 1, kBack = 2 };
 enum EraseItem : uint8_t { kCancel = 0, kConfirm = 1 };
-enum DeviceItem : uint8_t { kScanning = 0, kStandby = 1, kDashboard = 2, kDeviceBack = 3 };
+enum DeviceItem : uint8_t { kScanning = 0, kStandby = 1, kDashboard = 2, kAlerts = 3, kDeviceBack = 4 };
 enum DashboardItem : uint8_t { kUsb = 0, kWifi = 1, kDashboardBack = 2 };
+enum AlertsItem : uint8_t { kAlertsSwitch = 0, kBuzzer = 1, kFlash = 2, kTest = 3, kAlertsBack = 4 };
 
 }  // namespace
 
 Press classify_press(uint32_t held_ms, uint32_t uptime_ms) {
-  if (held_ms >= kPowerOffHoldMs && uptime_ms >= kPowerOffMinUptimeMs) return Press::PowerOff;
+  if (held_ms >= kPowerOffHoldMs) {
+    return uptime_ms >= kPowerOffMinUptimeMs ? Press::PowerOff : Press::PowerOffEarly;
+  }
   return held_ms >= kLongPressMs ? Press::Long : Press::Short;
 }
 
@@ -40,6 +45,9 @@ const char *const *menu_items(Overlay overlay, size_t *count) {
     case Overlay::DashboardMenu:
       *count = sizeof(kDashboardMenu) / sizeof(kDashboardMenu[0]);
       return kDashboardMenu;
+    case Overlay::AlertsMenu:
+      *count = sizeof(kAlertsMenu) / sizeof(kAlertsMenu[0]);
+      return kAlertsMenu;
     default:
       *count = 0;
       return nullptr;
@@ -57,6 +65,10 @@ bool message_active(const UiState &state, uint32_t now_ms) {
 
 Action handle_press(UiState &state, Press press, uint32_t now_ms) {
   if (press == Press::PowerOff) return Action::PowerOff;
+  if (press == Press::PowerOffEarly) {  // says why nothing happened, and does nothing else
+    show_message(state, "Power off after 30 s", now_ms);
+    return Action::None;
+  }
 
   size_t count = 0;
   menu_items(state.overlay, &count);
@@ -109,6 +121,11 @@ Action handle_press(UiState &state, Press press, uint32_t now_ms) {
         state.item = static_cast<uint8_t>((state.item + 1) % count);
         return Action::None;
       }
+      if (state.item == kAlerts) {
+        state.overlay = Overlay::AlertsMenu;
+        state.item = 0;
+        return Action::None;
+      }
       if (state.item == kDashboard && !state.dashboard_running) {
         state.overlay = Overlay::DashboardMenu;  // choose USB or Wi-Fi
         state.item = 0;
@@ -134,6 +151,24 @@ Action handle_press(UiState &state, Press press, uint32_t now_ms) {
       }
       state.overlay = Overlay::None;
       return state.item == kUsb ? Action::StartUsbDashboard : Action::StartWifiDashboard;
+
+    case Overlay::AlertsMenu:
+      if (press == Press::Short) {
+        state.item = static_cast<uint8_t>((state.item + 1) % count);
+        return Action::None;
+      }
+      // A setting changes in place, so the menu shows its new value; a
+      // test plays over the menu and returns to it.
+      switch (state.item) {
+        case kAlertsSwitch: return Action::ToggleAlerts;
+        case kBuzzer: return Action::ToggleBuzzer;
+        case kFlash: return Action::ToggleFlash;
+        case kTest: return Action::TestAlert;
+        default:
+          state.overlay = Overlay::DeviceMenu;  // back where the submenu opened
+          state.item = kAlerts;
+          return Action::None;
+      }
   }
   return Action::None;
 }

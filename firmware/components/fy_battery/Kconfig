@@ -1,13 +1,13 @@
-menu "Detector battery"
+menu "Limier battery"
 
     config FY_BATTERY_FULL_MV
         int "Battery voltage shown as 100% (mV)"
         default 4270
         range 3500 4500
         help
-            Measured battery voltage that maps to 100%. The default is what
-            a Heltec V4.3 read under normal load just after a full charge was
-            unplugged; it reads about 4300 mV while on the charger.
+            Measured battery voltage that maps to 100%: a full cell under
+            normal load just after the charger is unplugged. It reads about
+            4300 mV while charging.
 
     config FY_BATTERY_EMPTY_MV
         int "Battery voltage shown as 0% (mV)"

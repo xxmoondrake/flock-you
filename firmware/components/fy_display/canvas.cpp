@@ -113,6 +113,12 @@ static_assert(sizeof(kFont) / sizeof(kFont[0]) == 0x7f - 0x20, "one glyph per pr
 
 void Canvas::clear() { memset(buf_, 0, sizeof(buf_)); }
 
+void Canvas::load_frame(const uint8_t *frame, bool inverted) {
+  for (size_t i = 0; i < kFrameBytes; i++) {
+    buf_[i] = inverted ? static_cast<uint8_t>(~frame[i]) : frame[i];
+  }
+}
+
 void Canvas::set_pixel(int x, int y, bool on) {
   if (x < 0 || x >= kWidth || y < 0 || y >= kHeight) return;
   uint8_t &b = buf_[(y / 8) * kWidth + x];
@@ -131,7 +137,7 @@ void Canvas::fill_rect(int x, int y, int w, int h, bool on) {
   }
 }
 
-int Canvas::draw_text(int x, int y, const char *text, bool on) {
+int Canvas::draw_text(int x, int y, const char *text, bool on, int scale) {
   if (!text) return x;
   for (; *text; text++) {
     unsigned char c = static_cast<unsigned char>(*text);
@@ -139,10 +145,10 @@ int Canvas::draw_text(int x, int y, const char *text, bool on) {
     const uint8_t *glyph = kFont[c - 0x20];
     for (int col = 0; col < 5; col++) {
       for (int row = 0; row < 8; row++) {
-        if ((glyph[col] >> row) & 1) set_pixel(x + col, y + row, on);
+        if ((glyph[col] >> row) & 1) fill_rect(x + col * scale, y + row * scale, scale, scale, on);
       }
     }
-    x += kCharWidth;
+    x += kCharWidth * scale;
   }
   return x;
 }

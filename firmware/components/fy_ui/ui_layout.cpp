@@ -27,6 +27,8 @@
 
 #include "fy_ui_layout.h"
 
+#include "splash_frame.h"
+
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -54,6 +56,13 @@ void text_at(Canvas &c, int y, const char *text, bool inverted = false) {
   } else {
     c.draw_text(0, y, buf);
   }
+}
+
+// Centres `text` on the row at `y`, `scale` times the font size; text wider
+// than the screen starts at its left edge and is clipped.
+void centred(Canvas &c, int y, const char *text, int scale = 1) {
+  const int width = static_cast<int>(strlen(text)) * kCharWidth * scale - scale;
+  c.draw_text(width < kWidth ? (kWidth - width) / 2 : 0, y, text, true, scale);
 }
 
 void line(Canvas &c, int row, const char *text, bool inverted = false) {
@@ -117,22 +126,36 @@ void render_menu(Canvas &c, const UiModel &m, const UiState &s) {
   size_t count = 0;
   const char *const *items = menu_items(s.overlay, &count);
   int y = 13;
+  int step = 10;
+  if (count > 4) {  // five items fit only closer together
+    y = 12;
+    step = 9;
+  }
   if (s.overlay == Overlay::EraseConfirm) {
     title(c, "ERASE ALL RECORDS?");
     char buf[32];
-    snprintf(buf, sizeof(buf), "%lu records, incl.", static_cast<unsigned long>(m.records_used));
+    snprintf(buf, sizeof(buf), "%lu records", static_cast<unsigned long>(m.records_used));
     text_at(c, 11, buf);
-    text_at(c, 20, "battery samples");
     y = 31;
   } else if (s.overlay == Overlay::DeviceMenu) {
     title(c, "DEVICE MENU");
   } else if (s.overlay == Overlay::DashboardMenu) {
     title(c, "START DASHBOARD");
+  } else if (s.overlay == Overlay::AlertsMenu) {
+    title(c, "ALERTS");
   } else {
     title(c, "DATA MENU");
   }
-  for (size_t i = 0; i < count; i++, y += 10) {
+  for (size_t i = 0; i < count; i++, y += step) {
     const char *label = items[i];
+    char buf[kColumns + 1];
+    if (s.overlay == Overlay::AlertsMenu && i < 3) {
+      // Each setting with its value; the buzzer needs a configured pin.
+      const bool on = i == 0 ? m.alerts_enabled : i == 1 ? m.alert_buzzer : m.alert_flash;
+      snprintf(buf, sizeof(buf), "%s: %s%s", items[i], on ? "On" : "Off",
+               i == 1 && !m.buzzer_fitted ? " (none)" : "");
+      label = buf;
+    }
     if (s.overlay == Overlay::DeviceMenu) {
       // Mark the selected mode; name the dashboard item by what it will do.
       if (i == 0 && !m.standby) label = "Scanning - selected";
@@ -168,6 +191,23 @@ void render_low_battery(Canvas &c, uint16_t mv, bool starting) {
   text_at(c, 28, buf);
   text_at(c, 40, starting ? "Too low to start" : "Saving, powering off");
   text_at(c, 52, "Charge to restart");
+}
+
+void render_shutdown(Canvas &c) {
+  c.load_frame(kSplashFrame);
+  c.fill_rect(0, 55, kWidth, 9, false);  // a clear row for the notice
+  centred(c, 56, "Saving, powering off");
+}
+
+void render_about(Canvas &c, const char *model, const char *version) {
+  c.clear();
+  centred(c, 6, "Limier", 3);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "HW %s", model);
+  centred(c, 36, buf);
+  // A version too long to share the row with its label is shown alone.
+  snprintf(buf, sizeof(buf), "FW %s", version);
+  centred(c, 48, strlen(buf) <= static_cast<size_t>(kColumns) ? buf : version);
 }
 
 namespace {
@@ -321,8 +361,6 @@ void render_data(Canvas &c, const UiModel &m) {
   text_at(c, kListY[1], buf, m.storage_warning);
   snprintf(buf, sizeof(buf), "Encounter recs %lu", static_cast<unsigned long>(m.encounter_records));
   text_at(c, kListY[2], buf);
-  snprintf(buf, sizeof(buf), "Battery smp %lu", static_cast<unsigned long>(m.battery_records));
-  text_at(c, kListY[3], buf);
   if (m.oldest_utc) {
     char date[16];
     format_date(m.oldest_utc, date, sizeof(date));
@@ -330,7 +368,7 @@ void render_data(Canvas &c, const UiModel &m) {
   } else {
     snprintf(buf, sizeof(buf), "Oldest: no UTC yet");
   }
-  text_at(c, kListY[4], buf);
+  text_at(c, kListY[3], buf);
   text_at(c, kListY[5], "Hold: data menu");
 }
 

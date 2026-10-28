@@ -1,7 +1,7 @@
 # Settings shared by every board. Board-specific settings are in
 # sdkconfig.defaults.<platformio env>.
 
-# Flash and partitions (both supported boards provide at least 8 MB).
+# Flash and partitions (every supported board has at least 8 MB).
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -17,3 +17,7 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 
 # 1 kHz tick so channel dwell and short indicator pulses are timed precisely.
 CONFIG_FREERTOS_HZ=1000
+
+# No build date or time in the firmware image: the same source builds the
+# same image, and an image says nothing about when or where it was built.
+CONFIG_APP_COMPILE_TIME_DATE=n

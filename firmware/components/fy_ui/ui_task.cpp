@@ -5,12 +5,14 @@
 #include <atomic>
 #include <cstdio>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "fy_alerts.h"
 #include "fy_battery.h"
 #include "fy_board.h"
 #include "fy_canvas.h"
@@ -21,9 +23,11 @@
 #include "fy_recorder.h"
 #include "fy_signatures.h"
 #include "fy_store.h"
+#include "fy_ui_alerts.h"
 #include "fy_ui_controller.h"
 #include "fy_ui_layout.h"
 #include "fy_usb.h"
+#include "splash_frame.h"
 
 namespace {
 
@@ -39,8 +43,11 @@ constexpr int kDebouncePolls = 2;
 // How long a specific match keeps the alert banner on screen.
 constexpr uint32_t kAlertMs = 10000;
 constexpr uint32_t kPowerOffSaveTimeoutMs = 2000;
+constexpr uint32_t kShutdownNoticeMs = 500;  // the power-off screen's time after saving
 constexpr uint32_t kSaveFailedNoticeMs = 1500;  // shown before powering off anyway
 constexpr uint32_t kLowBatteryNoticeMs = 3000;
+constexpr uint32_t kSplashMinMs = 3000;
+constexpr uint32_t kAboutMs = 2000;
 
 fy::display::Canvas canvas;
 UiModel model;  // large; kept off the task stack
@@ -49,6 +56,7 @@ UiState state;
 std::atomic<bool> ui_running{false};
 std::atomic<bool> low_battery_requested{false};
 std::atomic<uint16_t> low_battery_mv{0};
+uint32_t splash_until_ms = 0;  // set before the UI task starts
 
 uint32_t now_ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
@@ -81,6 +89,11 @@ void gather(UiModel &m, bool power_off_armed) {
   m = UiModel{};
   m.now_ms = now_ms();
   m.power_off_armed = power_off_armed;
+  const fy::alerts::Settings alerts = fy_alerts_settings();
+  m.alerts_enabled = alerts.enabled;
+  m.alert_buzzer = alerts.buzzer;
+  m.alert_flash = alerts.flash;
+  m.buzzer_fitted = fy_board_has_buzzer();
 
   fy_detector_status d;
   fy_detector_get_status(&d);
@@ -154,7 +167,6 @@ void gather(UiModel &m, bool power_off_armed) {
   m.records_used = r.used;
   m.records_capacity = r.capacity;
   m.encounter_records = r.encounter_records;
-  m.battery_records = r.battery_records;
   m.oldest_utc = r.oldest_utc;
   m.boot = r.boot;
   m.erasing = r.erasing;
@@ -183,14 +195,24 @@ void save_before_power_off() {
 }
 
 [[noreturn]] void power_off() {
-  canvas.clear();
-  canvas.draw_text(0, 28, "Saving, powering off");
+  fy::ui::render_shutdown(canvas);
   fy_board_display_flush(canvas.frame());
   save_before_power_off();
+  vTaskDelay(pdMS_TO_TICKS(kShutdownNoticeMs));
   fy_board_power_off();
 }
 
 void ui_task(void *) {
+  // The start-up image keeps the screen for its minimum time, then the name
+  // and versions show briefly.
+  if (splash_until_ms) {
+    const uint32_t started = now_ms();
+    if (splash_until_ms > started) vTaskDelay(pdMS_TO_TICKS(splash_until_ms - started));
+    fy::ui::render_about(canvas, fy_board_model(), esp_app_get_description()->version);
+    fy_board_display_flush(canvas.frame());
+    vTaskDelay(pdMS_TO_TICKS(kAboutMs));
+  }
+
   bool pressed = false;
   int stable = 0;
   uint32_t pressed_since = 0;
@@ -199,6 +221,22 @@ void ui_task(void *) {
   uint32_t save_marker = 0;
   bool save_pending = false;
   bool was_erasing = false;
+
+  // Screen flashes, for specific matches reported from here on and for
+  // tests; the buzzer's sounds are fy_alerts'.
+  fy::ui::AlertGate alert_gate;
+  fy_detector_status det;
+  fy_detector_get_status(&det);
+  uint32_t seen_specific = det.reported_specific;
+  uint32_t seen_tests = fy_alerts_tests();
+  bool flashing = false;
+  uint32_t flash_started = 0;
+  fy::ui::FlashFrame flash_shown = fy::ui::FlashFrame::Done;
+  auto start_flash = [&](uint32_t at) {
+    flashing = true;
+    flash_started = at;
+    flash_shown = fy::ui::FlashFrame::Done;
+  };
 
   for (;;) {
     if (low_battery_requested) {
@@ -221,6 +259,10 @@ void ui_task(void *) {
       pressed = raw;
       if (pressed) {
         pressed_since = now;
+      } else if (flashing) {
+        flashing = false;  // a press during an alert only ends it
+        armed = false;
+        redraw = true;
       } else {
         const fy::ui::Press press = fy::ui::classify_press(now - pressed_since, now);
         armed = false;
@@ -258,6 +300,25 @@ void ui_task(void *) {
           fy::ui::show_message(state, "Saving encounters", now);
         }
         if (action == Action::EraseAll) fy_recorder_request_erase();
+        if (action == Action::ToggleAlerts || action == Action::ToggleBuzzer ||
+            action == Action::ToggleFlash) {
+          fy::alerts::Settings s = fy_alerts_settings();
+          bool &setting = action == Action::ToggleAlerts   ? s.enabled
+                          : action == Action::ToggleBuzzer ? s.buzzer
+                                                           : s.flash;
+          setting = !setting;
+          if (!fy_alerts_set(s)) fy::ui::show_message(state, "Setting not saved", now);
+        }
+        if (action == Action::TestAlert) {
+          const fy::alerts::Settings s = fy_alerts_settings();
+          if (!s.enabled) {
+            fy::ui::show_message(state, "Alerts are off", now);
+          } else if (!s.flash_on() && !(s.buzzer_on() && fy_board_has_buzzer())) {
+            fy::ui::show_message(state, "No alert output", now);
+          } else {
+            fy_alerts_test();  // the buzzer sounds; the flash follows below
+          }
+        }
         redraw = true;
       }
     }
@@ -285,6 +346,35 @@ void ui_task(void *) {
     if (r.erasing) redraw = redraw || now - last_draw >= 200;
     was_erasing = r.erasing;
 
+    // A newly reported specific match flashes the screen unless its address
+    // flashed it recently, and so does a test (from here or the dashboard).
+    // The image covers the screen briefly, then the screen returns.
+    fy_detector_get_status(&det);
+    const bool flash_on = fy_alerts_settings().flash_on();
+    if (det.reported_specific != seen_specific) {
+      seen_specific = det.reported_specific;
+      if (flash_on && alert_gate.admit(det.last_specific.mac, now)) start_flash(now);
+    }
+    const uint32_t tests = fy_alerts_tests();
+    if (tests != seen_tests) {
+      seen_tests = tests;
+      if (flash_on) start_flash(now);
+    }
+    if (flashing) {
+      const fy::ui::FlashFrame frame = fy::ui::flash_frame(now - flash_started);
+      if (frame == fy::ui::FlashFrame::Done) {
+        flashing = false;
+        redraw = true;
+      } else {
+        if (frame != flash_shown) {
+          canvas.load_frame(fy::ui::kSplashFrame, frame == fy::ui::FlashFrame::Inverted);
+          fy_board_display_flush(canvas.frame());
+          flash_shown = frame;
+        }
+        redraw = false;
+      }
+    }
+
     if (redraw) {
       draw(armed);
       last_draw = now;
@@ -294,6 +384,12 @@ void ui_task(void *) {
 }
 
 }  // namespace
+
+void fy_ui_show_splash() {
+  if (!fy_board_display_available()) return;
+  fy_board_display_flush(fy::ui::kSplashFrame);
+  splash_until_ms = now_ms() + kSplashMinMs;
+}
 
 esp_err_t fy_ui_start() {
   if (!fy_board_display_available()) return ESP_ERR_NOT_SUPPORTED;

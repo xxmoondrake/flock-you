@@ -1,4 +1,4 @@
-menu "Detector GPS"
+menu "Limier GPS"
 
     config FY_GPS_LOG_RAW_NMEA
         bool "Log every raw NMEA sentence"

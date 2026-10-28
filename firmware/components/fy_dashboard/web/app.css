@@ -27,6 +27,7 @@
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
 h1 { font-size: 18px; margin: 0; }
+h1 .logo { vertical-align: middle; margin-right: 8px; border-radius: 4px; }
 h2 { font-size: 17px; margin: 20px 0 8px; }
 a { color: inherit; }
 button, select, input { font: inherit; color: inherit; }
@@ -54,6 +55,9 @@ input[type="search"], select, .button, button.plain, #refresh, .more {
 }
 .button, button.plain, #refresh, .more { cursor: pointer; text-decoration: none; display: inline-block; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button.danger { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+#set-tiers .check { margin-left: 24px; }
+.about { margin-top: 24px; text-align: center; }
 
 .split { display: grid; gap: 12px; }
 @media (min-width: 820px) {

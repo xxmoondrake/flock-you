@@ -1,4 +1,4 @@
-> **About this fork:** it adds [`firmware/`](firmware/README.md), ESP-IDF detector firmware for the Seeed XIAO ESP32S3 and the Heltec WiFi LoRa 32 V4.3 (OLED screens, GNSS, battery protection, on-device recording). Its serial output works with the Flask dashboard in [`api/`](api/). Signature sources are in [`datasets/esp_idf_firmware_signatures.md`](datasets/esp_idf_firmware_signatures.md). The rest of this README is upstream's. It describes the Arduino firmware in the repository root, which the fork leaves unchanged.
+> **About this fork:** this fork adds Limier ([`firmware/`](firmware/README.md)), passive detection firmware for the Seeed XIAO ESP32S3 and the Heltec WiFi LoRa 32 V4.3 and V4 R8. Limier records detections with GPS positions and serves its own browser dashboard; its serial output also works with the Flask dashboard in [`api/`](api/). The rest of this README is upstream's and describes the Arduino firmware in the repository root, which the fork leaves unchanged.
 
 # Flock-You: Promiscuous WiFi Edition
 

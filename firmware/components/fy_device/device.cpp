@@ -209,6 +209,15 @@ void button_task(void *) {
 esp_err_t fy_device_start() {
   if (task_handle) return ESP_OK;
   fy_dashboard_set_request_hook(fy_device_note_activity);
+  fy_dashboard_set_mode_hooks(
+      [] {
+        fy_device_status s;
+        fy_device_get_status(&s);
+        return s.selected == fy::device::Mode::Standby;
+      },
+      [](bool standby) {
+        fy_device_select_mode(standby ? fy::device::Mode::Standby : fy::device::Mode::Scanning);
+      });
   if (xTaskCreate(device_task, "fy_device", 6144, nullptr, 2, &task_handle) != pdPASS) {
     return ESP_ERR_NO_MEM;
   }

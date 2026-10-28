@@ -14,6 +14,7 @@
 
 #include "fy_canvas.h"
 #include "fy_ui_layout.h"
+#include "splash_frame.h"
 
 using fy::display::Canvas;
 using fy::ui::UiModel;
@@ -236,7 +237,6 @@ UiModel data_model() {
   m.records_capacity = 32768;
   m.storage_percent = 3;
   m.encounter_records = 412;
-  m.battery_records = 822;
   m.oldest_utc = 1767225600;  // 2026-01-01T00:00:00Z
   return m;
 }
@@ -274,7 +274,9 @@ void test_data_screen() {
   Canvas c;
   fy::ui::render_data(c, data_model());
   maybe_write_pbm(c, "screen_data");
-  TEST_ASSERT_TRUE(lit_pixels(c, 0, 56, 128, 8) > 0);  // menu hint
+  TEST_ASSERT_TRUE(lit_pixels(c, 0, 38, 128, 8) > 0);    // the oldest record, fourth row
+  TEST_ASSERT_EQUAL_INT(0, lit_pixels(c, 0, 47, 128, 8));  // nothing below it
+  TEST_ASSERT_TRUE(lit_pixels(c, 0, 56, 128, 8) > 0);    // menu hint
 }
 
 void test_menu_and_confirm_render_through_dispatch() {
@@ -313,6 +315,106 @@ void test_erase_progress_and_power_off_prompts() {
   fy::ui::render(off, m, s);
   maybe_write_pbm(off, "screen_power_off");
   TEST_ASSERT_TRUE(off.pixel(127, 22));
+}
+
+void test_scaled_text_draws_blocks() {
+  Canvas one, three;
+  one.draw_text(0, 0, "I");
+  TEST_ASSERT_EQUAL_INT(18, three.draw_text(0, 0, "I", true, 3));
+  TEST_ASSERT_EQUAL_INT(lit_pixels(one, 0, 0, 6, 8) * 9, lit_pixels(three, 0, 0, 18, 24));
+  for (int y = 0; y < 8; y++) {
+    for (int x = 0; x < 5; x++) TEST_ASSERT_EQUAL(one.pixel(x, y), three.pixel(3 * x + 2, 3 * y + 1));
+  }
+}
+
+void test_about_screen() {
+  Canvas c;
+  fy::ui::render_about(c, "Heltec V4.3", "9c7173e-dirty");
+  maybe_write_pbm(c, "screen_about");
+  TEST_ASSERT_TRUE(lit_pixels(c, 0, 6, 128, 24) > 100);  // the name, three times the font size
+  Canvas hw;
+  hw.draw_text((128 - (14 * 6 - 1)) / 2, 36, "HW Heltec V4.3");
+  Canvas fw;
+  fw.draw_text((128 - (16 * 6 - 1)) / 2, 48, "FW 9c7173e-dirty");
+  for (int x = 0; x < 128; x++) {
+    for (int y = 0; y < 8; y++) {
+      TEST_ASSERT_EQUAL(hw.pixel(x, 36 + y), c.pixel(x, 36 + y));
+      TEST_ASSERT_EQUAL(fw.pixel(x, 48 + y), c.pixel(x, 48 + y));
+    }
+  }
+  // A version too long to fit beside its label is shown alone, centred.
+  Canvas l, alone;
+  fy::ui::render_about(l, "Heltec V4.3", "v0.12.0-13-g9c7173e");
+  alone.draw_text((128 - (19 * 6 - 1)) / 2, 48, "v0.12.0-13-g9c7173e");
+  for (int x = 0; x < 128; x++) {
+    for (int y = 48; y < 56; y++) TEST_ASSERT_EQUAL(alone.pixel(x, y), l.pixel(x, y));
+  }
+}
+
+void test_load_frame_and_inverted() {
+  uint8_t frame[fy::display::kFrameBytes] = {};
+  frame[0] = 0x01;  // the top-left pixel
+  Canvas c;
+  c.load_frame(frame);
+  TEST_ASSERT_TRUE(c.pixel(0, 0));
+  TEST_ASSERT_FALSE(c.pixel(1, 0));
+  c.load_frame(frame, true);
+  TEST_ASSERT_FALSE(c.pixel(0, 0));
+  TEST_ASSERT_TRUE(c.pixel(1, 0));
+  TEST_ASSERT_TRUE(c.pixel(127, 63));
+}
+
+void test_device_menu_fits_five_items() {
+  UiModel m{};
+  UiState s;
+  s.screen = fy::ui::Screen::Device;
+  s.overlay = fy::ui::Overlay::DeviceMenu;
+  s.item = 4;  // Back
+  Canvas c;
+  fy::ui::render(c, m, s);
+  maybe_write_pbm(c, "menu_device");
+  TEST_ASSERT_TRUE(c.pixel(127, 50));  // the fifth item's highlight
+  Canvas hint;
+  hint.draw_text(0, 56, "press:next hold:ok");
+  for (int y = 56; y < 64; y++) {
+    for (int x = 0; x < 128; x++) TEST_ASSERT_EQUAL(hint.pixel(x, y), c.pixel(x, y));
+  }
+}
+
+void test_alerts_menu_shows_settings() {
+  UiModel m{};
+  m.alerts_enabled = true;
+  m.alert_buzzer = true;
+  m.alert_flash = false;
+  m.buzzer_fitted = false;
+  UiState s;
+  s.screen = fy::ui::Screen::Device;
+  s.overlay = fy::ui::Overlay::AlertsMenu;
+  s.item = 4;  // Back, so the settings rows are not inverted
+  Canvas c;
+  fy::ui::render(c, m, s);
+  maybe_write_pbm(c, "menu_alerts");
+  const char *rows[] = {"Alerts: On", "Buzzer: On (none)", "Screen flash: Off"};
+  for (int i = 0; i < 3; i++) {
+    Canvas expect;
+    const int y0 = 12 + 9 * i;  // five items sit closer together
+    expect.draw_text(0, y0, rows[i]);
+    for (int y = y0; y < y0 + 8; y++) {
+      for (int x = 0; x < 128; x++) TEST_ASSERT_EQUAL(expect.pixel(x, y), c.pixel(x, y));
+    }
+  }
+}
+
+void test_shutdown_screen_keeps_the_image() {
+  Canvas c;
+  fy::ui::render_shutdown(c);
+  maybe_write_pbm(c, "screen_shutdown");
+  Canvas image;
+  image.load_frame(fy::ui::kSplashFrame);
+  for (int y = 0; y < 55; y++) {
+    for (int x = 0; x < 128; x++) TEST_ASSERT_EQUAL(image.pixel(x, y), c.pixel(x, y));
+  }
+  TEST_ASSERT_TRUE(lit_pixels(c, 0, 56, 128, 8) > 0);  // the notice
 }
 
 void test_low_battery_notice() {
@@ -471,9 +573,15 @@ int main(int, char **) {
   RUN_TEST(test_usb_dashboard_screens);
   RUN_TEST(test_dashboard_submenu_renders);
   RUN_TEST(test_low_battery_notice);
+  RUN_TEST(test_about_screen);
+  RUN_TEST(test_shutdown_screen_keeps_the_image);
+  RUN_TEST(test_load_frame_and_inverted);
+  RUN_TEST(test_device_menu_fits_five_items);
+  RUN_TEST(test_alerts_menu_shows_settings);
   RUN_TEST(test_pixels_use_ssd1306_page_order);
   RUN_TEST(test_out_of_range_pixels_are_clipped);
   RUN_TEST(test_text_advance_and_unprintable_bytes);
+  RUN_TEST(test_scaled_text_draws_blocks);
   RUN_TEST(test_every_printable_glyph_has_pixels_except_space);
   RUN_TEST(test_format_age);
   RUN_TEST(test_screen_searching_shows_diagnostics);

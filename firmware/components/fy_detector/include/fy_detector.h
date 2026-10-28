@@ -60,6 +60,7 @@ struct fy_detector_sighting {
 };
 
 // Called from the matcher task for every match. It must return quickly and
-// never block (hand the sighting to a queue).
+// never block (hand the sighting to a queue). Add hooks before
+// fy_detector_start(); false when all hook slots are taken.
 using fy_detector_sighting_hook = void (*)(const fy_detector_sighting &sighting);
-void fy_detector_set_sighting_hook(fy_detector_sighting_hook hook);
+bool fy_detector_add_sighting_hook(fy_detector_sighting_hook hook);

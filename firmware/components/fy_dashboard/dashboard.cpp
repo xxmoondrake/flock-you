@@ -20,6 +20,7 @@
 #include <cstring>
 #include <new>
 
+#include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -34,6 +35,7 @@
 #include "psa/crypto.h"
 #include "sdkconfig.h"
 
+#include "fy_alerts.h"
 #include "fy_battery.h"
 #include "fy_board.h"
 #include "fy_dashboard_auth.h"
@@ -57,6 +59,14 @@ extern const uint8_t app_js_start[] asm("_binary_app_js_start");
 extern const uint8_t app_js_end[] asm("_binary_app_js_end");
 extern const uint8_t app_css_start[] asm("_binary_app_css_start");
 extern const uint8_t app_css_end[] asm("_binary_app_css_end");
+extern const uint8_t logo_png_start[] asm("_binary_logo_png_start");
+extern const uint8_t logo_png_end[] asm("_binary_logo_png_end");
+extern const uint8_t icon_png_start[] asm("_binary_icon_png_start");
+extern const uint8_t icon_png_end[] asm("_binary_icon_png_end");
+extern const uint8_t icon_192_png_start[] asm("_binary_icon_192_png_start");
+extern const uint8_t icon_192_png_end[] asm("_binary_icon_192_png_end");
+extern const uint8_t manifest_start[] asm("_binary_manifest_webmanifest_start");
+extern const uint8_t manifest_end[] asm("_binary_manifest_webmanifest_end");
 
 namespace {
 
@@ -82,6 +92,8 @@ esp_netif_t *ap_netif = nullptr;  // exists only while a session runs
 httpd_handle_t server = nullptr;
 std::atomic<bool> access_point_on{false};  // also read by the HTTP server task
 fy_dashboard_request_hook request_hook = nullptr;
+fy_dashboard_mode_get mode_get = nullptr;
+fy_dashboard_mode_set mode_set = nullptr;
 
 // Written by the device task only; read by others under the lock.
 portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -253,6 +265,8 @@ esp_err_t store_password(const char *password) {
 void gather_status(fy::dashboard::Status &s) {
   s = {};
   s.board = fy_board_name();
+  s.model = fy_board_model();
+  s.firmware = esp_app_get_description()->version;
   s.uptime_s = static_cast<uint32_t>(esp_timer_get_time() / 1000000);
   s.wifi_session = access_point_on;
   s.detection_paused = access_point_on;  // the reason when capture is off in a session
@@ -421,7 +435,8 @@ esp_err_t send_form_page(httpd_req_t *req, size_t len) {
   no_store(req);
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_set_hdr(req, "Content-Security-Policy",
-                     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                     "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; "
+                     "form-action 'self'; "
                      "frame-ancestors 'none'");
   return httpd_resp_send(req, page, static_cast<ssize_t>(len));
 }
@@ -578,13 +593,22 @@ esp_err_t reject_body(httpd_req_t *req, BodyResult result) {
 
 // ---- Pages ---------------------------------------------------------------------------------
 
+// The firmware version and board, for the login and password pages.
+const char *about_line() {
+  static char line[72];
+  snprintf(line, sizeof(line), "Limier %s \u00b7 %s", esp_app_get_description()->version,
+           fy_board_model());
+  return line;
+}
+
 esp_err_t send_login(httpd_req_t *req, LoginNotice notice, uint32_t wait_s = 0) {
-  return send_form_page(req, fy::dashboard::render_login_page(notice, wait_s, page, sizeof(page)));
+  return send_form_page(
+      req, fy::dashboard::render_login_page(notice, wait_s, page, sizeof(page), about_line()));
 }
 
 esp_err_t send_password_page(httpd_req_t *req, const char *problem) {
   return send_form_page(req, fy::dashboard::render_password_page(password_is_default(), problem,
-                                                                 page, sizeof(page)));
+                                                                 page, sizeof(page), about_line()));
 }
 
 esp_err_t root_get(httpd_req_t *req) {
@@ -596,20 +620,46 @@ esp_err_t root_get(httpd_req_t *req) {
   // Nothing loads from anywhere but the device.
   httpd_resp_set_hdr(req, "Content-Security-Policy",
                      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
-                     "connect-src 'self'; form-action 'self'; frame-ancestors 'none'");
+                     "connect-src 'self'; manifest-src 'self'; form-action 'self'; "
+                     "frame-ancestors 'none'");
   return httpd_resp_send(req, reinterpret_cast<const char *>(index_html_start),
                          index_html_end - index_html_start);
 }
 
+// Files served as they are, without a login. The images change only with
+// the firmware, so browsers may keep them for a day.
+struct Asset {
+  const char *path;
+  const uint8_t *start;
+  const uint8_t *end;
+  const char *type;
+  const char *cache;
+};
+
+const Asset kAssets[] = {
+    {"/app.js", app_js_start, app_js_end, "text/javascript; charset=utf-8", "no-cache"},
+    {"/app.css", app_css_start, app_css_end, "text/css; charset=utf-8", "no-cache"},
+    {"/logo.png", logo_png_start, logo_png_end, "image/png", "max-age=86400"},
+    // The tab icon. Unanswered, the request fell through to the captive
+    // portal's redirect and the browser loaded the whole page again.
+    {"/favicon.ico", icon_png_start, icon_png_end, "image/png", "max-age=86400"},
+    // For a phone's home screen: the name and a larger icon.
+    {"/icon-192.png", icon_192_png_start, icon_192_png_end, "image/png", "max-age=86400"},
+    {"/manifest.webmanifest", manifest_start, manifest_end, "application/manifest+json",
+     "max-age=86400"},
+};
+
 esp_err_t asset_get(httpd_req_t *req) {
   if (portal_redirected(req)) return ESP_OK;
-  const bool js = strncmp(req->uri, "/app.js", 7) == 0;
-  httpd_resp_set_type(req, js ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8");
-  httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-  httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-  const uint8_t *start = js ? app_js_start : app_css_start;
-  const uint8_t *end = js ? app_js_end : app_css_end;
-  return httpd_resp_send(req, reinterpret_cast<const char *>(start), end - start);
+  const size_t path_len = strcspn(req->uri, "?");
+  for (const Asset &a : kAssets) {
+    if (strlen(a.path) != path_len || strncmp(req->uri, a.path, path_len) != 0) continue;
+    httpd_resp_set_type(req, a.type);
+    httpd_resp_set_hdr(req, "Cache-Control", a.cache);
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    return httpd_resp_send(req, reinterpret_cast<const char *>(a.start), a.end - a.start);
+  }
+  return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
 }
 
 esp_err_t login_get(httpd_req_t *req) {
@@ -761,6 +811,8 @@ struct Stream {
   char next_seq[12];
   char history[24];
   char oldest_seq[12];
+  char disposition[64];
+  char generator[96];  // the JSON download's header
   size_t used = 0;
   bool failed = false;  // the client went away
 };
@@ -814,12 +866,20 @@ esp_err_t stream_encounters(httpd_req_t *req, Format format, bool download) {
   httpd_resp_set_hdr(req, "X-FY-Oldest-Seq", s->oldest_seq);
   httpd_resp_set_type(req, format == Format::Json ? "application/json" : "text/csv; charset=utf-8");
   if (download) {
-    httpd_resp_set_hdr(req, "Content-Disposition",
-                       format == Format::Json
-                           ? "attachment; filename=\"detector-detections.json\""
-                           : "attachment; filename=\"detector-detections.csv\"");
+    char date[12];
+    query_value(req, "date", date, sizeof(date));  // the browser's date, for the file name
+    char name[40];
+    fy::dashboard::export_filename(date, format == Format::Json, name, sizeof(name));
+    snprintf(s->disposition, sizeof(s->disposition), "attachment; filename=\"%s\"", name);
+    httpd_resp_set_hdr(req, "Content-Disposition", s->disposition);
   }
-  if (format == Format::Json) {
+  if (format == Format::Json && download) {
+    // A downloaded file says what made it; the page's own requests get the bare list.
+    const int n = snprintf(s->generator, sizeof(s->generator),
+                           "{\"generator\":\"Limier %s\",\"board\":\"%s\",\"detections\":[",
+                           esp_app_get_description()->version, fy_board_model());
+    stream_add(req, *s, s->generator, static_cast<size_t>(n));
+  } else if (format == Format::Json) {
     stream_add(req, *s, "[", 1);
   } else {
     const char *header = fy::dashboard::encounter_csv_header();
@@ -856,7 +916,13 @@ esp_err_t stream_encounters(httpd_req_t *req, Format format, bool download) {
       (have_log && fy_recorder_log_snapshot(&after) && after.revision != cursor.revision)) {
     s->failed = true;
   }
-  if (format == Format::Json && !s->failed) stream_add(req, *s, "\n]\n", 3);
+  if (format == Format::Json && !s->failed) {
+    if (download) {
+      stream_add(req, *s, "\n]}\n", 4);
+    } else {
+      stream_add(req, *s, "\n]\n", 3);
+    }
+  }
   stream_flush(req, *s);
   const bool failed = s->failed;
   delete s;
@@ -887,6 +953,102 @@ esp_err_t phone_post(httpd_req_t *req) {
   if (fy::dashboard::form_value(body.text, body.len, "t", t, sizeof(t))) {
     fy_recorder_set_phone_time(strtoull(t, nullptr, 10));
   }
+  return send_json(req, "{}", 2);
+}
+
+// ---- Device settings and actions ---------------------------------------------------------
+
+constexpr uint32_t kSaveWaitMs = 3000;
+
+fy::dashboard::DeviceSettings current_settings() {
+  fy::dashboard::DeviceSettings s = {};
+  s.alerts = fy_alerts_settings();
+  s.buzzer_fitted = fy_board_has_buzzer();
+  s.display = fy_board_display_available();
+  s.standby = mode_get && mode_get();
+  return s;
+}
+
+esp_err_t send_settings(httpd_req_t *req) {
+  char json[192];
+  const size_t n = fy::dashboard::format_settings_json(current_settings(), json, sizeof(json));
+  if (!n) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Settings too long");
+  return send_json(req, json, n);
+}
+
+esp_err_t settings_get(httpd_req_t *req) {
+  if (portal_redirected(req)) return ESP_OK;
+  if (!api_allowed(req)) return ESP_OK;
+  return send_settings(req);
+}
+
+// Changes the settings the form names; answers with all of them.
+esp_err_t settings_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
+  if (portal_redirected(req)) return ESP_OK;
+  if (!same_origin(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
+  if (!api_allowed(req)) return ESP_OK;
+  const fy::dashboard::DeviceSettings before = current_settings();
+  fy::dashboard::DeviceSettings after = before;
+  if (!fy::dashboard::apply_settings_form(body.text, body.len, &after)) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad setting");
+  }
+  if (after.standby != before.standby && mode_set) mode_set(after.standby);
+  if (fy::alerts::pack(after.alerts) != fy::alerts::pack(before.alerts) &&
+      !fy_alerts_set(after.alerts)) {
+    return send_json_error(req, "500 Internal Server Error", "not saved");
+  }
+  return send_settings(req);
+}
+
+// Checks for the POST actions below, once their body is read; false when a
+// response has been sent instead.
+bool action_allowed(httpd_req_t *req) {
+  if (portal_redirected(req)) return false;
+  if (!same_origin(req)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request");
+    return false;
+  }
+  return api_allowed(req);
+}
+
+esp_err_t test_alert_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
+  if (!action_allowed(req)) return ESP_OK;
+  fy_alerts_test();
+  return send_json(req, "{}", 2);
+}
+
+// Saves open encounters and answers whether that worked.
+esp_err_t save_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
+  if (!action_allowed(req)) return ESP_OK;
+  const fy_recorder_save_result result = fy_recorder_save_and_wait(kSaveWaitMs);
+  const char *json = result == FY_RECORDER_SAVED        ? "{\"saved\":true}"
+                     : result == FY_RECORDER_SAVE_FAILED ? "{\"saved\":false}"
+                                                         : "{\"saved\":null}";
+  return send_json(req, json, strlen(json));
+}
+
+// Erases every record; the form must say confirm=erase. The page learns of
+// the new history from its next status check.
+esp_err_t erase_post(httpd_req_t *req) {
+  Body body;
+  const BodyResult read = read_body(req, body);
+  if (read != BodyResult::Ok) return reject_body(req, read);
+  if (!action_allowed(req)) return ESP_OK;
+  char confirm[8];
+  if (!fy::dashboard::form_value(body.text, body.len, "confirm", confirm, sizeof(confirm)) ||
+      strcmp(confirm, "erase") != 0) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Confirm the erase");
+  }
+  fy_recorder_request_erase();
   return send_json(req, "{}", 2);
 }
 
@@ -1005,6 +1167,10 @@ esp_err_t start_server() {
       {"/", HTTP_GET, root_get},
       {"/app.js", HTTP_GET, asset_get},
       {"/app.css", HTTP_GET, asset_get},
+      {"/logo.png", HTTP_GET, asset_get},
+      {"/favicon.ico", HTTP_GET, asset_get},
+      {"/icon-192.png", HTTP_GET, asset_get},
+      {"/manifest.webmanifest", HTTP_GET, asset_get},
       {"/login", HTTP_GET, login_get},
       {"/login", HTTP_POST, login_post},
       {"/logout", HTTP_POST, logout_post},
@@ -1015,6 +1181,11 @@ esp_err_t start_server() {
       {"/api/phone", HTTP_POST, phone_post},
       {"/api/notes", HTTP_GET, notes_get},
       {"/api/notes", HTTP_POST, notes_post},
+      {"/api/settings", HTTP_GET, settings_get},
+      {"/api/settings", HTTP_POST, settings_post},
+      {"/api/test-alert", HTTP_POST, test_alert_post},
+      {"/api/save", HTTP_POST, save_post},
+      {"/api/erase", HTTP_POST, erase_post},
       {"/export/detections.json", HTTP_GET, export_json_get},
       {"/export/detections.csv", HTTP_GET, export_csv_get},
       {"/*", HTTP_GET, other_get},
@@ -1179,3 +1350,8 @@ void fy_dashboard_get_status(fy_dashboard_status *out) {
 }
 
 void fy_dashboard_set_request_hook(fy_dashboard_request_hook hook) { request_hook = hook; }
+
+void fy_dashboard_set_mode_hooks(fy_dashboard_mode_get get, fy_dashboard_mode_set set) {
+  mode_get = get;
+  mode_set = set;
+}

@@ -3,13 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Detector</title>
+<title>Limier</title>
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1f2327" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
 <header class="bar">
-  <h1>Detector</h1>
+  <h1><img class="logo" src="/logo.png" alt="" width="64" height="32">Limier</h1>
   <nav class="tabs" role="tablist" aria-label="Views">
     <button type="button" role="tab" data-view="list" aria-selected="true">Detections</button>
     <button type="button" role="tab" data-view="map" aria-selected="false">Map</button>
@@ -75,6 +79,28 @@
   </section>
 
   <section id="view-device" class="view" hidden>
+    <h2>Detection</h2>
+    <label class="check"><input type="radio" name="mode" value="scanning"> Scanning</label>
+    <label class="check"><input type="radio" name="mode" value="standby"> Standby: detection stopped, the detector stays on</label>
+    <h2>Alerts</h2>
+    <label class="check"><input type="checkbox" id="set-alerts"> Alerts: the buzzer and the screen flash. Detection and recording go on either way.</label>
+    <label class="check"><input type="checkbox" id="set-buzzer"> Buzzer</label>
+    <label class="check" id="set-flash-row"><input type="checkbox" id="set-flash"> Screen flash, for specific matches</label>
+    <p class="muted">Buzzer sounds, from the most confident detections to the least:</p>
+    <div id="set-tiers"></div>
+    <p id="no-buzzer" class="muted" hidden>No buzzer pin is set (FY_BUZZER_GPIO).</p>
+    <p class="actions"><button type="button" class="plain" id="test-alert">Test alert</button></p>
+    <h2>Records</h2>
+    <p class="actions">
+      <button type="button" class="plain" id="save-open">Save open detections</button>
+      <button type="button" class="plain" id="erase">Erase all records…</button>
+    </p>
+    <p id="erase-confirm" hidden>Erase every stored detection and battery sample? This cannot be undone.</p>
+    <p id="erase-buttons" class="actions" hidden>
+      <button type="button" class="plain danger" id="erase-yes">Erase everything</button>
+      <button type="button" class="plain" id="erase-no">Cancel</button>
+    </p>
+    <p id="settings-note" class="muted" aria-live="polite"></p>
     <h2>Status</h2>
     <dl id="status" class="status"></dl>
     <h2>This phone</h2>
@@ -87,6 +113,7 @@
     <h2>Account</h2>
     <p><a class="button" href="/password">Change password</a></p>
     <form method="post" action="/logout"><button type="submit" class="plain">Log out</button></form>
+    <p id="about" class="muted about"></p>
   </section>
 </main>
 <div id="alert" class="alert" role="alert" hidden></div>

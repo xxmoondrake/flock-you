@@ -1,4 +1,4 @@
-menu "Detector board"
+menu "Limier board"
 
     choice FY_BOARD
         prompt "Target board"
@@ -12,6 +12,18 @@ menu "Detector board"
 
         config FY_BOARD_HELTEC_V43
             bool "Heltec WiFi LoRa 32 V4.3"
+
+        config FY_BOARD_HELTEC_V4_R8
+            bool "Heltec WiFi LoRa 32 V4 R8 (ESP32-S3R8)"
     endchoice
+
+    config FY_BUZZER_GPIO
+        int "Alert buzzer GPIO (-1: none)"
+        default 3
+        range -1 48
+        help
+            GPIO of a passive piezo buzzer for detection alerts, driven with
+            a square wave. Upstream flock-you uses GPIO3 (the XIAO ESP32-S3's
+            D2); it is free on both supported boards. -1 for no buzzer.
 
 endmenu

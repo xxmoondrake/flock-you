@@ -630,8 +630,8 @@
   function buildGpx(rows) {
     const out = [
       '<?xml version="1.0" encoding="UTF-8"?>',
-      '<gpx version="1.1" creator="Detector dashboard" xmlns="http://www.topografix.com/GPX/1/1" xmlns:osmand="https://osmand.net">',
-      `<metadata><name>Detector detections</name><time>${new Date().toISOString()}</time></metadata>`,
+      '<gpx version="1.1" creator="Limier dashboard" xmlns="http://www.topografix.com/GPX/1/1" xmlns:osmand="https://osmand.net">',
+      `<metadata><name>Limier detections</name><time>${new Date().toISOString()}</time></metadata>`,
     ];
     for (const r of rows) {
       if (!r.pos) continue;
@@ -674,7 +674,7 @@
       return;
     }
     const url = URL.createObjectURL(new Blob([buildGpx(rows)], { type: 'application/gpx+xml' }));
-    const a = el('a', { href: url, download: 'detector-detections.gpx' });
+    const a = el('a', { href: url, download: `limier-detections-${localDate()}.gpx` });
     document.body.append(a);
     a.click();
     a.remove();
@@ -684,10 +684,19 @@
       (missing ? `; ${plural(missing, 'address has', 'addresses have')} no position and ${missing === 1 ? 'is' : 'are'} left out.` : '.');
   }
 
+  // This phone's date as YYYY-MM-DD, for download file names.
+  function localDate() {
+    const d = new Date();
+    const two = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  }
+
+  // The device names the files after the date sent with the request.
   function exportLinks() {
-    const q = $('#export-ignored').checked ? '?ignored=1' : '';
-    $('#csv').href = `/export/detections.csv${q}`;
-    $('#json').href = `/export/detections.json${q}`;
+    const q = new URLSearchParams({ date: localDate() });
+    if ($('#export-ignored').checked) q.set('ignored', '1');
+    $('#csv').href = `/export/detections.csv?${q}`;
+    $('#json').href = `/export/detections.json?${q}`;
   }
 
   // ---- This phone's clock ---------------------------------------------------
@@ -710,7 +719,8 @@
 
   function renderStatus(s) {
     const rows = [
-      ['Board', s.board],
+      ['Board', s.model || s.board],
+      ['Firmware', `Limier ${s.firmware}`],
       ['Dashboard', s.dashboard === 'wifi' ? `Wi-Fi (ends after ${s.idle_minutes} min without use)` : 'USB'],
       ['Detection', detectionText(s)],
       ['Battery', s.battery ? `${s.battery.percent}% (${(s.battery.mv / 1000).toFixed(2)} V)` : 'Not measured'],
@@ -725,6 +735,7 @@
       ['Uptime', duration(s.uptime_s * 1000)]);
     if (s.passkey_temporary) rows.push(['Wi-Fi passkey', 'Still the generated one shown on the device']);
     $('#status').replaceChildren(...rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: v })]));
+    $('#about').textContent = `Limier ${s.firmware} \u00b7 ${s.model || s.board}`;
   }
 
   async function loadStatus() {
@@ -1156,7 +1167,10 @@
     if (name === 'map') map.show();
     else map.hide();
     keepOffTop();
-    if (name === 'device') loadStatus();
+    if (name === 'device') {
+      loadStatus();
+      loadSettings();
+    }
   }
 
   // Android's network sign-in window reloads the page on any downward drag
@@ -1187,6 +1201,9 @@
   track.addEventListener('change', () => map.setTrackVisible(track.checked));
   $('#gpx').addEventListener('click', downloadGpx);
   $('#export-ignored').addEventListener('change', exportLinks);
+  // Refreshed as each download starts, in case the date changed meanwhile.
+  $('#csv').addEventListener('click', exportLinks);
+  $('#json').addEventListener('click', exportLinks);
   const vibrate = $('#vibrate');
   vibrate.checked = pref('vibrate', true);
   vibrate.addEventListener('change', () => setPref('vibrate', vibrate.checked));
@@ -1197,6 +1214,112 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) clearTimeout(pollTimer);
     else schedulePoll(0);
+  });
+
+  // ---- Device settings ------------------------------------------------------------
+
+  // Upstream's confidence tiers that the detector's rules use, with the
+  // buzzer's sound for each (tier 0 has no rule here).
+  const TIERS = [
+    [4, 'Probe with the Flock fingerprint', 'high rising chirp'],
+    [3, 'Wildcard probe or Flock Wi-Fi network', 'rising chirp'],
+    [2, 'Transmitter address or Bluetooth signature', 'blip'],
+    [1, 'Receiver or network address, or Bluetooth vendor', 'low blip'],
+  ];
+  let settings = null;
+  const settingsNote = (text) => { $('#settings-note').textContent = text; };
+
+  $('#set-tiers').replaceChildren(...TIERS.map(([tier, what, sound]) => el('label', { class: 'check' },
+    el('input', { type: 'checkbox', value: String(tier) }), ` ${what} (${sound})`)));
+
+  function renderSettings(s) {
+    settings = s;
+    for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
+    $('#set-alerts').checked = s.alerts;
+    $('#set-buzzer').checked = s.buzzer;
+    $('#set-buzzer').disabled = !s.buzzer_fitted;
+    $('#set-flash').checked = s.flash;
+    $('#set-flash-row').hidden = !s.display;
+    $('#no-buzzer').hidden = s.buzzer_fitted;
+    for (const box of document.querySelectorAll('#set-tiers input')) {
+      box.checked = Boolean((s.tiers >> Number(box.value)) & 1);
+      box.disabled = !s.buzzer_fitted;
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      renderSettings(await api('/api/settings'));
+    } catch (err) {
+      settingsNote(`Could not load the settings (${err.message}).`);
+    }
+  }
+
+  // Each change is saved at once; the device answers with every setting.
+  async function changeSettings(form) {
+    try {
+      renderSettings(await api('/api/settings', { form }));
+      settingsNote('Saved.');
+    } catch (err) {
+      settingsNote(`Not saved (${err.message}).`);
+      loadSettings();
+    }
+  }
+
+  for (const r of document.querySelectorAll('input[name="mode"]')) {
+    r.addEventListener('change', () => changeSettings({ mode: r.value }));
+  }
+  $('#set-alerts').addEventListener('change', (e) => changeSettings({ alerts: e.target.checked ? 1 : 0 }));
+  $('#set-buzzer').addEventListener('change', (e) => changeSettings({ buzzer: e.target.checked ? 1 : 0 }));
+  $('#set-flash').addEventListener('change', (e) => changeSettings({ flash: e.target.checked ? 1 : 0 }));
+  $('#set-tiers').addEventListener('change', (e) => {
+    if (!settings) return;
+    const bit = 1 << Number(e.target.value);
+    changeSettings({ tiers: e.target.checked ? settings.tiers | bit : settings.tiers & ~bit });
+  });
+
+  $('#test-alert').addEventListener('click', async () => {
+    if (settings && !settings.alerts) {
+      settingsNote('Alerts are off.');
+      return;
+    }
+    try {
+      await api('/api/test-alert', { form: {} });
+      settingsNote('Test alert sent.');
+    } catch (err) {
+      settingsNote(`Test failed (${err.message}).`);
+    }
+  });
+
+  $('#save-open').addEventListener('click', async () => {
+    settingsNote('Saving…');
+    try {
+      const r = await api('/api/save', { form: {} });
+      settingsNote(r.saved === true ? 'Open detections saved.'
+        : r.saved === false ? 'Save failed.' : 'Save not confirmed in time.');
+    } catch (err) {
+      settingsNote(`Save failed (${err.message}).`);
+    }
+  });
+
+  const showEraseConfirm = (on) => {
+    $('#erase-confirm').hidden = !on;
+    $('#erase-buttons').hidden = !on;
+    $('#erase').hidden = on;
+  };
+  $('#erase').addEventListener('click', () => showEraseConfirm(true));
+  $('#erase-no').addEventListener('click', () => {
+    showEraseConfirm(false);
+    settingsNote('Erase cancelled.');
+  });
+  $('#erase-yes').addEventListener('click', async () => {
+    showEraseConfirm(false);
+    try {
+      await api('/api/erase', { form: { confirm: 'erase' } });
+      settingsNote('Erasing. The list empties when the device finishes.');
+    } catch (err) {
+      settingsNote(`Erase failed (${err.message}).`);
+    }
   });
 
   exportLinks();

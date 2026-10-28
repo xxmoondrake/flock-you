@@ -9,7 +9,7 @@ board reboots afterwards), for example:
 
 Then:
 
-    python read_obslog.py obslog.bin --battery-csv battery.csv --encounters-csv encounters.csv
+    python read_obslog.py obslog.bin --encounters-csv encounters.csv
 
 Encounter rows contain the detector's recorded positions; treat the output as
 sensitive location history.

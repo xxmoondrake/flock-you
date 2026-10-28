@@ -1,4 +1,4 @@
-menu "Detector Wi-Fi capture"
+menu "Limier Wi-Fi capture"
 
     config FY_WIFI_COUNTRY
         string "Wi-Fi country code"
@@ -7,7 +7,7 @@ menu "Detector Wi-Fi capture"
             The regulatory domain, which sets the channels the radio may
             tune to and the Wi-Fi dashboard's transmit rules. "01" is
             ESP-IDF's world-safe default: channels 1-11, as in the US and
-            Canada. Set your country (for example GB or DE) to also sweep
+            Canada. A local country code (for example GB or DE) also sweeps
             channels 12 and 13 where they are allowed. Codes ESP-IDF
             accepts: AT AU BE BG BR CA CH CN CY CZ DE DK EE ES FI FR GB GR HK
             HR HU IE IN IS IT JP KR LI LT LU LV MT MX NL NO NZ PL PT RO SE SI
@@ -34,7 +34,7 @@ menu "Detector Wi-Fi capture"
 
 endmenu
 
-menu "Detector signatures"
+menu "Limier signatures"
 
     config FY_SIG_MOTOROLA
         bool "Match Motorola Solutions OUIs and BLE IDs"
@@ -43,7 +43,7 @@ menu "Detector signatures"
             Motorola Solutions' IEEE blocks and Bluetooth IDs cover its
             whole product line: two-way radios carried by retail, school,
             and venue staff as much as police. Matches are labeled
-            possible. Turn off if they are noise where you use the device.
+            possible. Turn off if they are noise where the device is used.
 
     config FY_SIG_SIERRA_WIRELESS
         bool "Match Sierra Wireless OUIs"
@@ -56,9 +56,9 @@ menu "Detector signatures"
         bool "Match Cradlepoint OUIs"
         default n
         help
-            Off by default, as in the parity reference: its field testing
-            found no police vehicles and a steady stream of school buses
-            and cellular traffic cameras.
+            In-vehicle routers. Off by default: in alpr_detector's field
+            tests they were school buses and cellular traffic cameras, not
+            police vehicles.
 
     config FY_SIG_RADIO_OUIS_ANY_FRAME
         bool "Match Flock radio-module OUIs on any frame"
@@ -74,7 +74,7 @@ menu "Detector signatures"
 
 endmenu
 
-menu "Detector output"
+menu "Limier output"
 
     config FY_SERIAL_JSON
         bool "Print upstream flock-you dashboard JSON for each reported match"

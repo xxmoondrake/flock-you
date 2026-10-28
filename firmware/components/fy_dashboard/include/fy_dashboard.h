@@ -35,3 +35,9 @@ void fy_dashboard_get_status(fy_dashboard_status *out);
 // the HTTP server task. It must return quickly.
 using fy_dashboard_request_hook = void (*)();
 void fy_dashboard_set_request_hook(fy_dashboard_request_hook hook);
+
+// The detection mode for the dashboard's settings, provided by the device
+// layer, which owns it: `get` returns true in Standby.
+using fy_dashboard_mode_get = bool (*)();
+using fy_dashboard_mode_set = void (*)(bool standby);
+void fy_dashboard_set_mode_hooks(fy_dashboard_mode_get get, fy_dashboard_mode_set set);

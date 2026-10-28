@@ -1,4 +1,4 @@
-menu "Detector recording"
+menu "Limier recording"
 
     config FY_ENCOUNTER_ABSENCE_S
         int "Seconds of silence that close an encounter"
@@ -6,8 +6,7 @@ menu "Detector recording"
         range 5 3600
         help
             Repeated sightings of one device belong to the same encounter
-            until it goes unseen for this long. To be validated for driving,
-            walking, and stationary use.
+            until it goes unseen for this long.
 
     config FY_ENCOUNTER_CHECKPOINT_S
         int "Rewrite interval for a changing encounter (s)"

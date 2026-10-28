@@ -1,8 +1,8 @@
-menu "Detector Wi-Fi dashboard"
+menu "Limier Wi-Fi dashboard"
 
     config FY_WIFI_DASHBOARD
         bool "Offer the Wi-Fi dashboard"
-        default y if FY_BOARD_HELTEC_V43
+        default y if FY_BOARD_HELTEC_V43 || FY_BOARD_HELTEC_V4_R8
         default n
         help
             A WPA3 access point serving the dashboard, started from the

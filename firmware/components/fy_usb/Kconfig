@@ -1,4 +1,4 @@
-menu "Detector USB dashboard"
+menu "Limier USB dashboard"
 
     config FY_USB_DASHBOARD
         bool "Offer the dashboard over USB networking, with a USB console"

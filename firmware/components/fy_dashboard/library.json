@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Dashboard login, pages, exports, and captive-portal logic (host-testable); the ESP-IDF access point and server are excluded on host",
   "license": "MIT",
+  "dependencies": {
+    "fy_alerts": "*"
+  },
   "build": {
     "srcDir": ".",
     "includeDir": "include",

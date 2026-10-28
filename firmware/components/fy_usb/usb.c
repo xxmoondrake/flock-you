@@ -57,6 +57,27 @@ static bool s_running;  // every stage completed
 static esp_netif_t *s_netif;
 static volatile bool s_touch_baud;  // the host set the line to 1200 baud
 
+// String descriptors in esp_tinyusb's own order for a CDC + NCM device, so
+// the default configuration descriptor's indices still match; tinyusb_net
+// fills in the MAC address. Only the network interface's name differs from
+// the default ("USB net"): Windows names the adapter "<manufacturer>
+// <interface>", so with no interface name it is just the manufacturer's.
+#if CONFIG_TINYUSB_MSC_ENABLED || CONFIG_TINYUSB_MTP_ENABLED || !CONFIG_TINYUSB_CDC_ENABLED || \
+    !CONFIG_TINYUSB_NET_MODE_NCM
+#error "s_usb_strings follows the string order of a CDC + NCM device only"
+#endif
+_Static_assert(sizeof(CONFIG_TINYUSB_DESC_SERIAL_STRING) > 1,
+               "set a serial string: the chip-ID serial comes only with the default strings");
+static const char *s_usb_strings[] = {
+    (const char[]){0x09, 0x04},               // 0: English (0x0409)
+    CONFIG_TINYUSB_DESC_MANUFACTURER_STRING,  // 1
+    CONFIG_TINYUSB_DESC_PRODUCT_STRING,       // 2
+    CONFIG_TINYUSB_DESC_SERIAL_STRING,        // 3
+    CONFIG_TINYUSB_DESC_CDC_STRING,           // 4: console
+    "",                                       // 5: network interface
+    "",                                       // 6: MAC address
+};
+
 // ---- Network interface glue --------------------------------------------------
 
 // lwIP to USB: the frame only has to stay valid for the call.
@@ -218,7 +239,9 @@ static esp_err_t start_stages(void)
     // administered one derived from the device's.
     ESP_RETURN_ON_ERROR(esp_derive_local_mac(host_mac, device_mac), TAG, "derive_mac");
 
-    const tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
+    tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG();
+    tusb_cfg.descriptor.string = s_usb_strings;
+    tusb_cfg.descriptor.string_count = sizeof(s_usb_strings) / sizeof(s_usb_strings[0]);
     ESP_RETURN_ON_ERROR(tinyusb_driver_install(&tusb_cfg), TAG, "driver_install");
     s_stages |= STAGE_DRIVER;
 

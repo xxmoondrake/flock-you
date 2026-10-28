@@ -8,6 +8,12 @@
 
 #include "esp_err.h"
 
+// Shows the start-up image while the rest of the firmware starts. It stays
+// until the UI task starts, and for at least 3 s; the name, board, and
+// firmware version follow for 2 s. Does nothing without a display; call
+// before fy_ui_start().
+void fy_ui_show_splash();
+
 // Starts refreshing the board's display and handling its button.
 // Returns ESP_ERR_NOT_SUPPORTED when the board has no display.
 esp_err_t fy_ui_start();

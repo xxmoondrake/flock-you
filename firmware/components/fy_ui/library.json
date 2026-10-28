@@ -9,6 +9,6 @@
   "build": {
     "srcDir": ".",
     "includeDir": "include",
-    "srcFilter": ["+<ui_layout.cpp>", "+<ui_controller.cpp>"]
+    "srcFilter": ["+<ui_layout.cpp>", "+<ui_controller.cpp>", "+<ui_alerts.cpp>"]
   }
 }

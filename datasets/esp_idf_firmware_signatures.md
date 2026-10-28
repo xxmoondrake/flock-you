@@ -1,30 +1,49 @@
-# Signatures in the ESP-IDF firmware
+# Limier's signatures
 
-What the [`firmware/`](../firmware/README.md) build matches, where each identifier comes from, and how it is labeled. A **specific** match may raise a prominent alert. A **possible** match rests on a broad manufacturer prefix or a generic identifier. Neither label proves what a device is.
+This note lists what Limier ([`firmware/`](../firmware/README.md)) matches, where each identifier comes from, and how it is labeled. Every match is labeled one of two ways, and neither label proves what a device is:
+- **Specific:** the identifier points to the gear. A specific match flashes the Heltec's screen.
+- **Possible:** a broad manufacturer prefix or a generic identifier.
 
-## Review (2026-10-22)
+## Sources
 
-The set started as upstream's (`main.cpp` at `6704f01`) and was reviewed against the device families in [datafx/alpr_detector](https://github.com/datafx/alpr_detector) at `35ae012` (2026-10-06), the parity reference. Only identifiers were taken from it, never code or tables (it is GPLv3; this fork is MIT), and each identifier was checked against a primary source:
+The set starts from upstream flock-you's signatures (`main.cpp` at `6704f01`). It adds the device families of [datafx/alpr_detector](https://github.com/datafx/alpr_detector) (at `35ae012`). Only identifiers were taken from alpr_detector, never code or tables, because it is GPLv3 and this fork is MIT.
 
-- **IEEE registry**: the MA-L, MA-M, MA-S, and IAB lists downloaded from standards-oui.ieee.org on 2026-10-22. Every prefix below is checked at its exact block size against its registrant.
-- **Bluetooth SIG assigned numbers**: `company_identifiers.yaml`, `member_uuids.yaml`, and `service_uuids.yaml` from the SIG's public repository, 2026-10-22.
-- **Published field captures** where no registry applies (BLE names, payload tags, Raven services): [soyboi1312/all-cameras-are-beacons](https://github.com/soyboi1312/all-cameras-are-beacons) `docs/signatures.md` and `docs/axon.md` at `a54bf93` (2026-10-14, Apache-2.0); [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection) at `29501d5` (2026-07-16); upstream's [firmware_derived_signatures.md](firmware_derived_signatures.md) (Flock camera firmware dump) and [NitekryDPaul_wifi_ouis.md](NitekryDPaul_wifi_ouis.md).
+Each identifier is checked against one of these sources:
+- **IEEE registry:** the MA-L, MA-M, MA-S, and IAB lists. Each prefix is checked at its exact block size.
+- **Bluetooth SIG assigned numbers:** company identifiers, member UUIDs, and service UUIDs.
+- **Published field captures,** where no registry applies (BLE names, payload tags, Raven services):
+  - [soyboi1312/all-cameras-are-beacons](https://github.com/soyboi1312/all-cameras-are-beacons) (`docs/signatures.md` and `docs/axon.md`, Apache-2.0);
+  - [nitekry/nite-oui-collection](https://github.com/nitekry/nite-oui-collection);
+  - upstream's [firmware_derived_signatures.md](firmware_derived_signatures.md) (a Flock camera firmware dump) and [NitekryDPaul_wifi_ouis.md](NitekryDPaul_wifi_ouis.md).
 
-What changed:
+## Changes from upstream
 
-- **Vendor watchlist added (78 IEEE blocks).** Every family in the reference's Wi-Fi watchlist: ALPR makers, body cameras, two-way radios, in-vehicle networking, speed radar, light bars, drones, and gunshot sensors. A vendor that sells essentially only this gear is **specific** (its own block says something); a real police supplier whose blocks also ship on civilian equipment is **possible**. The reference's "law-enforcement only" and "broad" marks map to these labels. Matched as Wi-Fi transmitter, receiver, or BSSID, and as a BLE public device address.
-- **BLE families added.** Axon: the `BWCDEVICE` payload tag, company ID `0x034D`, and member UUIDs `0xFE6B`, `0xFE6C`, `0xFC81` (specific). Utility Inc. BodyWorn: the remote's name (specific). Motorola Solutions: company ID `0x04EC` and member UUIDs `0xFD8E`, `0xFE04` (possible). Flock: `FS-` plus four or more hex digits and a name starting `Flock` (both possible).
-- **Flock SoftAP SSID added**: `Flock-` plus four or more hex digits, anchored (specific).
-- **Flock Safety's own block `b4:1e:52` is now specific**: it is Flock's assignment, not a module maker's.
-- **Radio-module OUIs matched only in wildcard probes by default.** Upstream's community list is mostly Lite-On (22 blocks), plus Silicon Labs, Espressif, Samsung, and USI, all of which ship in laptops, phones, and IoT gear. The reference drops them, and all-cameras-are-beacons found them a false-positive source in the field. They now gate only the wildcard-probe rules, where the IE fingerprint tells a camera from a laptop. `FY_SIG_RADIO_OUIS_ANY_FRAME` restores upstream's any-frame matching.
-- **Removed `b8:35:32`**: it is not an IEEE assignment (likely a transcription error in the source list).
-- **Retired the bare 10-digit BLE name**: it matched a phone named `0102000000` in the field; the reference excludes it too. The rule id stays so stored records still decode.
-- **Raven narrowed to `0x3100`, `0x3200`, `0x3300`, `0x3400`, `0x3500`**, the services the field capture shows Raven advertising (upstream matched the whole `0x3100`-`0x3500` range). They are also read from 128-bit base-UUID form, which is how Raven advertises them.
-- **Switches** follow the reference's per-vendor excludes: Motorola Solutions and Sierra Wireless on, Cradlepoint off (its field testing found school buses and traffic cameras, no police vehicles).
+**Added**
+- **Vendor watchlist (78 IEEE blocks).** The watchlist covers ALPR makers, body cameras, two-way radios, in-vehicle networking, speed radar, light bars, drones, and gunshot sensors. It is matched on any Wi-Fi frame and as BLE public addresses.
+  - A vendor that sells essentially only this gear is **specific**.
+  - A supplier whose blocks also ship in civilian equipment is **possible**.
+- **BLE families:**
+  - **Axon:** the `BWCDEVICE` payload tag, company ID `0x034D`, and member UUIDs `0xFE6B`, `0xFE6C`, and `0xFC81` (specific).
+  - **BodyWorn:** the remote's name (specific).
+  - **Motorola Solutions:** company ID `0x04EC` and member UUIDs `0xFD8E` and `0xFE04` (possible).
+  - **Flock:** `FS-` plus four or more hex digits, and names starting `Flock` (both possible).
+- **Flock's SoftAP SSID:** `Flock-` plus four or more hex digits (specific).
 
-Not carried over: the reference's test SSID (`ALPRDET-TEST`), and its rule that OUIs match only non-randomized Wi-Fi addresses (`82:6b:f2` is locally administered and stays in the probe-gated list). Kept although the reference lacks them: upstream's Nordic DFU name and service, possible.
+**Changed**
+- **Flock Safety's own block** `b4:1e:52` is now specific.
+- **Radio-module OUIs** (Lite-On, Silicon Labs, Espressif, Samsung, and USI) also ship in laptops, phones, and IoT gear.
+  - By default they are matched only in wildcard probes, where the IE fingerprint tells a camera from a laptop.
+  - `FY_SIG_RADIO_OUIS_ANY_FRAME` restores upstream's any-frame matching.
+  - Another ESP32 can still match on the Espressif blocks.
+- **Raven** is narrowed to the five services it advertises, which are read in both 16-bit and 128-bit form.
+- **Vendor switches:** Motorola Solutions and Sierra Wireless are on by default. Cradlepoint is off: in alpr_detector's field tests its matches were school buses and traffic cameras.
+- **Shared identifiers are possible:** `DfuTarg`, the Nordic DFU service, and company ID `0x09C8`, because unrelated products share them.
 
-Still open: field validation of the new families (none of them has been seen by this firmware yet); a review of the legacy flocker rules; and `D8:1F:65`, which stays only while every device seen on it is Axon's.
+**Removed**
+- **`b8:35:32`:** it is not an IEEE assignment.
+- **The bare 10-digit BLE name:** it matched a phone. Its rule ID stays so that stored records still decode.
+
+**Not taken from alpr_detector:** its test SSID, and its rule that OUIs match only non-randomized addresses.
 
 ## Rules
 
@@ -149,7 +168,7 @@ Matched on any frame and as BLE public addresses, at the label shown. Name colli
 
 ## Flock radio-module OUIs (33)
 
-Matched only in wildcard probe requests by default, where the IE fingerprint decides between `wifi_probe_ie_sig` (specific) and `wifi_wildcard_probe` (possible); `FY_SIG_RADIO_OUIS_ANY_FRAME` also matches them on any frame, labeled possible. Registrants are from the IEEE registry. Upstream's `b8:35:32` is left out: IEEE has never assigned it.
+Matched only in wildcard probe requests by default, where the IE fingerprint decides between `wifi_probe_ie_sig` (specific) and `wifi_wildcard_probe` (possible); `FY_SIG_RADIO_OUIS_ANY_FRAME` also matches them on any frame, labeled possible. Registrants are from the IEEE registry.
 
 | Prefix | IEEE registrant | Source |
 |---|---|---|

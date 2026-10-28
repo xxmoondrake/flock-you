@@ -93,7 +93,9 @@ Route route_request(const char *host, const char *path, const char *local_ip, co
 bool is_dashboard_path(const char *path) {
   if (!path || path[0] != '/') return false;
   const size_t len = strcspn(path, "?");
-  static const char *const kExact[] = {"/", "/login", "/logout", "/password", "/app.js", "/app.css"};
+  static const char *const kExact[] = {"/", "/login", "/logout", "/password",
+                                       "/app.js", "/app.css", "/logo.png", "/favicon.ico",
+                                       "/icon-192.png", "/manifest.webmanifest"};
   for (const char *p : kExact) {
     if (strlen(p) == len && strncmp(path, p, len) == 0) return true;
   }

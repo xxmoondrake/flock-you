@@ -1,4 +1,4 @@
-menu "Detector status LED"
+menu "Limier status LED"
 
     config FY_STATUS_LED_PATTERNS
         bool "Show the operating mode on the status LED"

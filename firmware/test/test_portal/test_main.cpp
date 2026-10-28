@@ -129,6 +129,11 @@ void test_routing() {
   // The dashboard's own paths are served; look-alikes are not.
   TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/login", ip, kName));
   TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/app.js?v=2", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/logo.png", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/favicon.ico", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/manifest.webmanifest", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/icon-192.png", ip, kName));
+  TEST_ASSERT_EQUAL(Route::Redirect, route_request("captive.apple.com", "/favicon.ico", ip, kName));
   TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/api/detections", ip, kName));
   TEST_ASSERT_EQUAL(Route::Page, route_request("192.168.7.1", "/export/detections.csv", ip, kName));
   TEST_ASSERT_EQUAL(Route::Redirect, route_request("192.168.7.1", "/api/", ip, kName));

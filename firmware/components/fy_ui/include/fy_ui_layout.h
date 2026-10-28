@@ -90,13 +90,18 @@ struct UiModel {
   uint32_t records_used;
   uint32_t records_capacity;
   uint32_t encounter_records;
-  uint32_t battery_records;
   uint32_t oldest_utc;  // Unix seconds; 0 = unknown
   uint32_t boot;
 
   bool erasing;
   uint8_t erase_percent;
   bool power_off_armed;  // button held long enough; releasing powers off
+
+  // Alert preferences, for the Alerts menu.
+  bool alerts_enabled;
+  bool alert_buzzer;
+  bool alert_flash;
+  bool buzzer_fitted;
 };
 
 // Clears the canvas and draws the screen, menu, or prompt for `state`.
@@ -105,6 +110,14 @@ void render(display::Canvas &canvas, const UiModel &m, const UiState &state);
 // Low-battery notice shown for a few seconds before powering off. `mv` is
 // the measured voltage; `starting` is true when the board refused to start.
 void render_low_battery(display::Canvas &canvas, uint16_t mv, bool starting);
+
+// The power-off screen: the start-up image, with the notice that open
+// encounters are being saved on its bottom row.
+void render_shutdown(display::Canvas &canvas);
+
+// Start-up screen after the start-up image: the name in large text, then the
+// board model and the firmware version.
+void render_about(display::Canvas &canvas, const char *model, const char *version);
 
 // The individual screens, for tests and previews.
 void render_home(display::Canvas &canvas, const UiModel &m);

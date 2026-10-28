@@ -44,6 +44,8 @@ bool in_alphabet(char c) { return c != '\0' && strchr(kAlphabet, c) != nullptr; 
 Status sample_status() {
   Status s = {};
   s.board = "heltec_v43";
+  s.model = "Heltec V4.3";
+  s.firmware = "v0.1.0";
   s.uptime_s = 3725;
   s.wifi_session = true;
   s.detection_paused = true;
@@ -194,6 +196,10 @@ void test_login_page() {
   TEST_ASSERT_EQUAL_UINT(strlen(html), n);
   TEST_ASSERT_NOT_NULL(strstr(html, "<form method=\"post\" action=\"/login\">"));
   TEST_ASSERT_NOT_NULL(strstr(html, "name=\"password\" type=\"password\""));
+  TEST_ASSERT_NOT_NULL(strstr(html, "src=\"/logo.png\""));
+  TEST_ASSERT_NULL(strstr(html, "class=\"note foot\""));  // no footer unless given
+  render_login_page(LoginNotice::None, 0, html, sizeof(html), "Limier v0.1.0 & co");
+  TEST_ASSERT_NOT_NULL(strstr(html, "<p class=\"note foot\">Limier v0.1.0 &amp; co</p>"));
   TEST_ASSERT_NULL(strstr(html, "<script"));
   TEST_ASSERT_NULL(strstr(html, "class=\"err\""));
   render_login_page(LoginNotice::Failed, 0, html, sizeof(html));
@@ -232,6 +238,53 @@ void test_pages_too_small() {
   TEST_ASSERT_EQUAL_UINT(0, render_password_page(true, "", html, sizeof(html)));
 }
 
+void test_export_filename() {
+  char name[40];
+  TEST_ASSERT_TRUE(export_filename("2026-03-14", false, name, sizeof(name)) > 0);
+  TEST_ASSERT_EQUAL_STRING("limier-detections-2026-03-14.csv", name);
+  export_filename("2026-03-14", true, name, sizeof(name));
+  TEST_ASSERT_EQUAL_STRING("limier-detections-2026-03-14.json", name);
+  // No date, or anything but YYYY-MM-DD, leaves the date out.
+  for (const char *bad : {"", "2026-3-14", "2026/03/14", "2026-03-1x", "\"; x=\"", "2026-03-140"}) {
+    export_filename(bad, false, name, sizeof(name));
+    TEST_ASSERT_EQUAL_STRING("limier-detections.csv", name);
+  }
+  export_filename(nullptr, true, name, sizeof(name));
+  TEST_ASSERT_EQUAL_STRING("limier-detections.json", name);
+  TEST_ASSERT_EQUAL_UINT(0, export_filename("2026-03-14", false, name, 10));  // too small
+}
+
+void test_settings_json_and_form() {
+  DeviceSettings s = {};
+  s.alerts = fy::alerts::Settings{};
+  s.buzzer_fitted = true;
+  s.display = false;
+  s.standby = false;
+  char json[192];
+  TEST_ASSERT_TRUE(format_settings_json(s, json, sizeof(json)) > 0);
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"alerts\":true,\"buzzer\":true,\"flash\":true,\"tiers\":31,\"buzzer_fitted\":true,"
+      "\"display\":false,\"mode\":\"scanning\"}",
+      json);
+  TEST_ASSERT_EQUAL_UINT(0, format_settings_json(s, json, 16));  // too small
+
+  const char form[] = "alerts=0&tiers=17&mode=standby";
+  TEST_ASSERT_TRUE(apply_settings_form(form, strlen(form), &s));
+  TEST_ASSERT_FALSE(s.alerts.enabled);
+  TEST_ASSERT_TRUE(s.alerts.buzzer);  // absent fields keep their values
+  TEST_ASSERT_EQUAL_UINT8(17, s.alerts.tiers);
+  TEST_ASSERT_TRUE(s.standby);
+
+  // A malformed field changes nothing.
+  for (const char *bad : {"buzzer=2", "tiers=32", "tiers=-1", "tiers=", "tiers=1x", "mode=off",
+                          "flash=yes", "alerts=1&mode=paused"}) {
+    DeviceSettings t = s;
+    TEST_ASSERT_FALSE(apply_settings_form(bad, strlen(bad), &t));
+    TEST_ASSERT_EQUAL_UINT8(fy::alerts::pack(s.alerts), fy::alerts::pack(t.alerts));
+    TEST_ASSERT_EQUAL(s.standby, t.standby);
+  }
+}
+
 void test_status_json() {
   static char json[1024];
   const size_t n = format_status_json(sample_status(), json, sizeof(json));
@@ -239,7 +292,8 @@ void test_status_json() {
   TEST_ASSERT_EQUAL_UINT(strlen(json), n);
   TEST_ASSERT_EQUAL_INT('{', json[0]);
   TEST_ASSERT_EQUAL_INT('}', json[n - 1]);
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"board\":\"heltec_v43\""));
+  TEST_ASSERT_NOT_NULL(strstr(json, "\"board\":\"heltec_v43\",\"model\":\"Heltec V4.3\","
+                                    "\"firmware\":\"v0.1.0\""));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"dashboard\":\"wifi\",\"detection_paused\":true"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"capture\":{\"wifi\":false,\"ble\":false}"));
   TEST_ASSERT_NOT_NULL(strstr(json, "\"battery\":{\"mv\":4050,\"percent\":87}"));
@@ -870,6 +924,8 @@ int main(int, char **) {
   RUN_TEST(test_change_password_page);
   RUN_TEST(test_pages_too_small);
   RUN_TEST(test_status_json);
+  RUN_TEST(test_settings_json_and_form);
+  RUN_TEST(test_export_filename);
   RUN_TEST(test_form_value_decoding);
   RUN_TEST(test_form_value_rejects_bad_input);
   RUN_TEST(test_new_password_rules);
